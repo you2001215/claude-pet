@@ -4,3 +4,5 @@ vendor/
 *.log
 .DS_Store
 Thumbs.db
+.claude/worktrees/
+.claude/settings.local.json
