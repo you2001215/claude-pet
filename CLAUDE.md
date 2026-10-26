@@ -104,10 +104,12 @@ npm start        # prestart 会先跑 scripts/fetch-sherpa.js，下载离线语�
 
 ## 待办
 
-- **Claude 装动画：** 已有「待机」「东张西望」。`art-source/动画提示词.md` 里还有 16 条，用户会陆续用 AI 视频工具做好发过来。处理流程：
-  1. 运行 `python3 tools/process_clip.py 输入.mp4 assets/claude/动作名.webm 预览.png`，检查预览图；
-  2. 在 `assets/claude/clips.json` 里登记时长和循环段；
-  3. 接进 `renderer/pet.js`。目前 Claude 装只有 `idle`（待机）和 `turn`（张望）这两类会用视频，判断写在 `claudeVideo()` 和 `renderClaudeVideo()` 里。其他状态（思考、被摸头、生气、挥手、睡觉、走路……）要新加「状态 → 片段」的对应关系，可以参考女仆装的 `maidClip()`。
+- **Claude 装动画：** 已有 9 段：待机、东张西望、原地走路、思考中、说话、挥手打招呼、被摸头、被点开心、傲娇生气。`art-source/动画提示词.md` 里还剩 9 条（睡觉、打哈欠伸懒腰、吃白饭、到点提醒、两条余额、敲键盘、看屏幕、吐泡泡），用户会陆续用 AI 视频工具做好发过来。处理流程：
+  1. 先看内容：AI 视频常常时长不对、动作只占一段、带水印或会染色背景的特效，要先裁剪/涂掉再处理（做法见 `art-source/README.md` 的「动画」一行）；
+  2. 运行 `python tools/process_clip.py 输入.mp4 assets/claude/动作名.webm 预览.png`，检查预览图；
+  3. 在 `assets/claude/clips.json` 里登记时长和循环段（循环段按帧差找最像的两帧）；
+  4. 接进 `renderer/pet.js`：「状态 → 片段」写在 `claudeClip()`，键名和女仆装 `clips.json` 一致（walk、think、talk、pat、sulk、greet、clicks）。没有片段的状态（睡觉、坐、拖拽、掉落、伸懒腰）仍画立绘。
+- **Windows 上处理视频：** 用户电脑上用 winget 装了 Python 3.12（`%LOCALAPPDATA%\Programs\Python\Python312`，已装 numpy、pillow、scipy）和 ffmpeg（`Gyan.FFmpeg`）。在 Git Bash 里 `fetch-sherpa.js` 会因为 GNU tar 把 `C:` 当成远程主机而失败，`npm start` 要在 PowerShell 里跑。
 - **立绘：** 「喝水」「对着电脑打字」还没生成（提示词在 `art-source/立绘提示词.md`）。
   - 立绘处理没有现成脚本：要抠掉绿幕或白底，再在 `assets/pet/pet.json` 里登记 `feetX`、`feetY`、`headTop`。
   - 还可以用 `art-source/立绘/三视图.jpg`（1500×1500）重新切正面、侧面、背面立绘，让大尺寸显示更清晰。
