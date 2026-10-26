@@ -1,0 +1,178 @@
+{
+ "name": "Claude",
+ "baseHeight": 439,
+ "views": {
+  "front": {
+   "frames": [
+    "front.png"
+   ],
+   "feetX": 112.0,
+   "feetY": 432,
+   "headTop": 6
+  },
+  "front_closed": {
+   "frames": [
+    "front_closed.png"
+   ],
+   "feetX": 112.0,
+   "feetY": 432,
+   "headTop": 6
+  },
+  "front_happy": {
+   "frames": [
+    "front_happy.png"
+   ],
+   "feetX": 112.0,
+   "feetY": 432,
+   "headTop": 6
+  },
+  "side": {
+   "frames": [
+    "side_t0.png",
+    "side_t1.png",
+    "side_t2.png",
+    "side_t3.png",
+    "side_t4.png",
+    "side_t5.png",
+    "side_t6.png",
+    "side_t7.png"
+   ],
+   "feetX": 63.5,
+   "feetY": 434,
+   "headTop": 6,
+   "facing": "left",
+   "loop": "wag"
+  },
+  "back": {
+   "frames": [
+    "back_t0.png",
+    "back_t1.png",
+    "back_t2.png",
+    "back_t3.png",
+    "back_t4.png",
+    "back_t5.png",
+    "back_t6.png",
+    "back_t7.png"
+   ],
+   "feetX": 115.5,
+   "feetY": 434,
+   "headTop": 6,
+   "loop": "wag"
+  },
+  "sit": {
+   "frames": [
+    "sit.png"
+   ],
+   "feetX": 363.5,
+   "feetY": 838,
+   "headTop": 3,
+   "res": 2.0
+  },
+  "sleep": {
+   "frames": [
+    "sleep.png"
+   ],
+   "feetX": 263.5,
+   "feetY": 835,
+   "headTop": 3,
+   "res": 2.0
+  },
+  "dangle": {
+   "frames": [
+    "dangle.png"
+   ],
+   "feetX": 233.58,
+   "feetY": 1026,
+   "headTop": 5,
+   "hangX": 233.58,
+   "hangY": 8.84,
+   "res": 2.0
+  },
+  "walk": {
+   "frames": [
+    "walk_0.png",
+    "walk_1.png",
+    "walk_2.png",
+    "walk_3.png"
+   ],
+   "feetX": [
+    234.0,
+    230.0,
+    230.5,
+    233.5
+   ],
+   "feetY": [
+    837,
+    834,
+    839,
+    834
+   ],
+   "headTop": 5,
+   "facing": "right",
+   "res": 2.0
+  },
+  "happy": {
+   "frames": [
+    "happy.png"
+   ],
+   "feetX": 224.0,
+   "feetY": 861,
+   "headTop": 3,
+   "res": 2.0
+  },
+  "angry": {
+   "frames": [
+    "angry.png"
+   ],
+   "feetX": 192.5,
+   "feetY": 856,
+   "headTop": 3,
+   "res": 2.0
+  },
+  "wave": {
+   "frames": [
+    "wave.png",
+    "wave2.png"
+   ],
+   "feetX": [
+    254.0,
+    228.5
+   ],
+   "feetY": [
+    851,
+    851
+   ],
+   "headTop": 3,
+   "res": 2.0,
+   "fps": 3.2
+  },
+  "stretch": {
+   "frames": [
+    "stretch.png"
+   ],
+   "feetX": 283.5,
+   "feetY": 827,
+   "headTop": 3,
+   "res": 2.0
+  },
+  "fall": {
+   "frames": [
+    "fall.png"
+   ],
+   "feetX": 377.0,
+   "feetY": 846,
+   "headTop": 3,
+   "res": 2.0
+  },
+  "think": {
+   "frames": [
+    "think.png"
+   ],
+   "feetX": 217.0,
+   "feetY": 851,
+   "headTop": 3,
+   "res": 2.0
+  }
+ },
+ "_comment": "Views: frames[], feetX/feetY (px in the image; per-frame arrays allowed), headTop, res (pixel density vs baseHeight), facing, hangX/hangY for the drag pose."
+}

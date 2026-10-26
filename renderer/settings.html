@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' app:; img-src 'self' app: data: https://kiriyuki.com; style-src 'self' 'unsafe-inline'; script-src 'self' app:">
+<title>AI 设置</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<div class="settings">
+  <h1>AI 设置</h1>
+  <p class="sub">大肥鱼（cos Claude）用 DeepSeek（或任何 OpenAI 兼容接口）来聊天。Key 只加密保存在这台电脑上。</p>
+
+  <div class="card">
+    <h2>连接</h2>
+    <div class="row inline">
+      <button id="import">从 DeepSeek Harness 导入</button>
+      <span class="note">读取本机 ~/.dsh 里已经配好的 key 和模型</span>
+    </div>
+    <div class="row">
+      <label>API Key <span id="keyState" class="note"></span></label>
+      <input id="key" type="password" placeholder="粘贴新的 key（留空表示不改）" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="row">
+      <label>接口地址</label>
+      <input id="baseUrl" placeholder="https://api.deepseek.com" spellcheck="false">
+    </div>
+    <div class="row">
+      <label>模型</label>
+      <input id="model" list="modelList" placeholder="deepseek-flash" spellcheck="false">
+      <datalist id="modelList"></datalist>
+    </div>
+    <div class="inline">
+      <button id="test">保存并测试连接</button>
+      <button id="balanceBtn">查余额</button>
+      <button class="ghost" id="clearKey">删除 key</button>
+    </div>
+    <div class="msgline" id="connMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>人格</h2>
+    <div class="row">
+      <textarea id="persona" rows="9" spellcheck="false"></textarea>
+    </div>
+    <div class="inline"><button class="ghost" id="resetPersona">恢复默认人格</button></div>
+  </div>
+
+  <div class="card">
+    <h2>记忆</h2>
+    <label class="switch"><input type="checkbox" id="memoryOn"> 让她自己记住你说过的重要的事</label>
+    <div class="row" style="margin-top:10px">
+      <label>她记得的事（一行一条，可以直接改、删、加）</label>
+      <textarea id="notes" rows="6" spellcheck="false" placeholder="比如：怎么称呼我、喜欢吃什么、最近在忙什么"></textarea>
+    </div>
+    <div class="row">
+      <label>每次带上最近几轮对话</label>
+      <input id="turns" type="number" min="2" max="40" style="width:90px">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>主动说话</h2>
+    <div class="row">
+      <label>她什么时候会自己找你说话</label>
+      <select id="proactive">
+        <option value="off">不主动说话</option>
+        <option value="moments">只在早上见面、你离开回来、该休息、深夜时</option>
+        <option value="hourly">偶尔闲聊（约每小时一次）+ 上面这些时刻</option>
+        <option value="often">经常闲聊（约每 20 分钟）+ 上面这些时刻</option>
+      </select>
+    </div>
+    <p class="note">每次主动说话会调用一次 AI，费用很少。你正在和她聊天、或者离开电脑时，她不会打扰你。</p>
+    <div class="row" style="margin-top:10px">
+      <label>碎碎念（她自己嘀咕的话，也给女仆装的动作配字）</label>
+      <select id="whisper">
+        <option value="off">不碎碎念（动作照常，不配字）</option>
+        <option value="canned">只用固定台词（不花钱）</option>
+        <option value="mix">固定台词 + 偶尔让 AI 现编（最多约 15 分钟一句）</option>
+        <option value="ai">尽量让 AI 现编（约 5 分钟一句）</option>
+      </select>
+    </div>
+    <p class="note">AI 现编的碎碎念每句不到 ¥0.001；你离开电脑时不会调用。没设 key 或者连不上时自动用固定台词。</p>
+  </div>
+
+  <div class="card">
+    <h2>形象</h2>
+    <div class="row">
+      <label>她今天穿什么（右键菜单「换装」也能换）</label>
+      <select id="outfit">
+        <option value="claude">Claude 装（cos 成 Claude 的大肥鱼）</option>
+        <option value="maid">女仆装（原版大肥鱼，100 多段动画）</option>
+      </select>
+    </div>
+    <p class="note">女仆装的动画和大肥鱼梗图来自 <a href="#" data-url="https://github.com/PC2005-cloud/dsh-pet">dsh-pet</a>（素材仅限非商业使用）。大肥鱼是社区二创形象，不是 DeepSeek 官方形象：原型「溟月」出自 B 站 <a href="#" data-url="https://space.bilibili.com/4456176">@上善无形</a>，女仆鲸鱼娘设计出自 B 站 <a href="#" data-url="https://space.bilibili.com/4168597">@ZipZipPipe</a>，按 <a href="#" data-url="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans">CC BY-NC-SA 4.0</a> 授权。</p>
+  </div>
+
+  <div class="card" id="voiceCard">
+    <h2>语音 <span class="note" style="font-weight:400">（改动立即生效）</span></h2>
+    <div class="row">
+      <label>她说话出声吗</label>
+      <select id="vSpeak">
+        <option value="off">不出声</option>
+        <option value="ai">念出她的 AI 回复和主动找你说的话</option>
+        <option value="all">上面这些 + 碎碎念和戳她、摸头时的小反应</option>
+      </select>
+    </div>
+    <label class="switch" style="margin-bottom:10px"><input type="checkbox" id="vMuted"> 暂时静音（右键菜单里也能开关）</label>
+    <div class="row">
+      <label>声音来源</label>
+      <select id="vEngine">
+        <option value="edge">Edge 在线语音（推荐，最自然，需要联网）</option>
+        <option value="kokoro">离线语音 Kokoro（免费、不联网，要先下载约 170 MB）</option>
+        <option value="system">电脑自带的语音</option>
+      </select>
+    </div>
+    <div class="row" data-eng="edge">
+      <label>音色</label>
+      <select id="vEdgeVoice"></select>
+    </div>
+    <div class="row" data-eng="kokoro">
+      <label>音色（中文女声 / 男声，挑一个试听）</label>
+      <select id="vKokoroSid"></select>
+    </div>
+    <div data-eng="kokoro" class="model" id="mTts"></div>
+    <div class="row" data-eng="system">
+      <label>音色（来自系统设置里安装的语音）</label>
+      <select id="vSystemVoice"></select>
+    </div>
+    <div class="row sliders">
+      <label>语速 <span id="vRateV"></span></label>
+      <input type="range" id="vRate" min="-50" max="50" step="5">
+      <label data-pitch>音调 <span id="vPitchV"></span></label>
+      <input type="range" id="vPitch" min="-30" max="30" step="2" data-pitch>
+      <label>音量 <span id="vVolumeV"></span></label>
+      <input type="range" id="vVolume" min="0" max="100" step="5">
+    </div>
+    <div class="inline"><button id="vTest">试听</button><button class="ghost" id="vStop">停</button></div>
+    <div class="msgline" id="vMsg"></div>
+    <p class="note" data-eng="edge">Edge 语音用的是微软 Edge 浏览器「大声朗读」的在线服务（非官方接口），要念的文字会发给微软合成。偶尔连不上时，会自动换成离线语音（已下载的话）或电脑自带的语音。</p>
+
+    <h2 style="margin-top:16px">语音输入（跟她说话）</h2>
+    <p class="note">在聊天框点麦克风说话，或者右键她选「跟她说话（语音）」。识别在你电脑上离线完成（SenseVoice，普通话、粤语、英语、日语、韩语都行），录音不会上传。</p>
+    <div class="model" id="mAsr"></div>
+    <label class="switch" style="margin-top:8px"><input type="checkbox" id="vAutoSend"> 说完直接发给她（不勾的话先放进输入框，改一改再发）</label>
+    <p class="note" style="margin-top:8px">模型从 hf-mirror.com（国内镜像）下载，失败会自动换 huggingface.co，下载会校验完整性，断了可以接着下。</p>
+  </div>
+
+  <div class="card">
+    <h2>看屏幕</h2>
+    <div class="row">
+      <label>你在用浏览器时，她偶尔自己看一眼屏幕并点评</label>
+      <select id="look">
+        <option value="off">不要自己看</option>
+        <option value="sometimes">偶尔（约每 30～50 分钟）</option>
+        <option value="often">经常（约每 10～18 分钟）</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>看图用的模型（要能看图片，DeepSeek 用 deepseek-flash）</label>
+      <input id="visionModel" placeholder="deepseek-flash" spellcheck="false">
+    </div>
+    <p class="note">也可以随时右键选「看看我在看什么」，或在聊天框点「看屏幕」再发消息。截图只在那一刻截取当前屏幕（不会截到她自己和聊天框），发给你设置的 AI 接口后就丢掉，不存在电脑上。看聊天记录、网银这类页面时建议先关掉自动看。Mac 第一次用需要在「系统设置 → 隐私与安全性 → 录屏与系统录音」里允许 ClaudePet。</p>
+  </div>
+
+  <div class="card">
+    <h2>提醒</h2>
+    <p class="note">在聊天里跟她说「17 点提醒我开会」「半小时后叫我喝水」就能设提醒，到点她会主动来找你，同时弹一条系统通知。电脑当时没开的话，开机后会补上（一天以内的）。</p>
+    <div id="remList" class="note"></div>
+  </div>
+
+  <div class="card">
+    <h2>表情包</h2>
+    <div class="row">
+      <label>她发表情包的频率</label>
+      <select id="stickers">
+        <option value="off">不发</option>
+        <option value="sometimes">偶尔发</option>
+        <option value="often">经常发</option>
+      </select>
+    </div>
+    <label class="switch"><input type="checkbox" id="stickerDuo"> 也用「大肥鱼和 GPT娘」双人表情</label>
+    <label class="switch" style="margin-top:6px"><input type="checkbox" id="memes"> 也用大肥鱼梗图（27 张，桌宠自带，不用下载）</label>
+    <div class="inline" style="margin-top:10px"><button id="stickerTest">测试表情包下载</button><span class="note" id="stickerState"></span></div>
+    <div class="msgline" id="stickerMsg"></div>
+    <img id="stickerPreview" alt="" style="display:none;max-width:96px;border-radius:8px;margin-top:6px">
+    <p class="note" style="margin-top:10px">大肥鱼表情包作者：B站 <a href="#" data-url="https://space.bilibili.com/103739">可以叫我云大人</a>，<a href="#" data-url="https://kiriyuki.com">kiriyuki.com</a> 制作。表情数据来自 <a href="#" data-url="https://github.com/Loping151/dsh-nekowhale-stickers">dsh-nekowhale-stickers</a>（CC BY-NC 4.0，仅限非商业使用）。图片在第一次用到时从 kiriyuki.com 下载，之后存在本机。</p>
+  </div>
+
+  <div class="actions">
+    <button id="cancel">关闭</button>
+    <button class="primary" id="save">保存</button>
+  </div>
+  <div class="msgline" id="saveMsg"></div>
+</div>
+<script src="settings.js"></script>
+<script src="settings-voice.js"></script>
+</body>
+</html>
