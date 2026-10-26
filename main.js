@@ -265,6 +265,9 @@ function setOutfit(k) {
   for (const w of [chatWin, settingsWin]) if (w && !w.isDestroyed()) w.webContents.send('ui:outfit', k);
 }
 
+// window coordinates: Electron rejects -0 ("conversion failure"), which Math.round gives for -0.5..0; -0 + 0 is 0
+const px = (v) => Math.round(v) + 0;
+
 function setSize(k) {
   if (!win) return;
   const old = win.getBounds();
@@ -272,7 +275,7 @@ function setSize(k) {
   const { width, height } = winSizeFor(k);
   const cx = old.x + old.width / 2;
   const bottom = old.y + old.height;
-  win.setBounds({ x: Math.round(cx - width / 2), y: Math.round(bottom - height), width, height });
+  win.setBounds({ x: px(cx - width / 2), y: px(bottom - height), width, height });
   saveSettings();
   pushSettings();
 }
@@ -281,7 +284,7 @@ function resetPosition() {
   if (!win) return;
   const b = win.getBounds();
   const wa = screen.getPrimaryDisplay().workArea;
-  win.setPosition(Math.round(wa.x + wa.width / 2 - b.width / 2), Math.round(wa.y + wa.height / 2 - b.height / 2));
+  win.setPosition(px(wa.x + wa.width / 2 - b.width / 2), px(wa.y + wa.height / 2 - b.height / 2));
   send('cmd', 'dropped');
 }
 
@@ -566,7 +569,7 @@ function proactiveTick() {
 // ---------- ipc ----------
 ipcMain.on('set-pos', (_e, x, y) => {
   if (!win) return;
-  const nx = Math.round(x), ny = Math.round(y);
+  const nx = px(x), ny = px(y);
   // never hand the OS a broken coordinate (NaN / absurd values): ignore it and let the renderer resync
   if (!Number.isFinite(nx) || !Number.isFinite(ny) || Math.abs(nx) > 100000 || Math.abs(ny) > 100000) {
     logError('set-pos', new Error(`bad position ${x}, ${y}`));

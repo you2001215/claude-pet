@@ -306,27 +306,34 @@ async function proactive(kind, ctx = {}) {
   const limit = kind === 'reminder' ? 60 : kind === 'lookAsk' ? 90 : kind === 'look' ? 60 : 40;
   const cue = `[${nowLine()}]（这一条不是用户说的话，是给你的情境提示）${hint}\n请你主动对用户说一句话：口语化，不超过 ${limit} 个字，不要重复之前说过的话，不要写 <memory>。只输出这句话本身（想发表情包的话照常在最后写 [sticker:词]）。`;
   if (hist.length && hist[hist.length - 1].role === 'user') hist.push({ role: 'assistant', content: '（安静地待在桌面上）' });
-  const r = await fetch(cfg.baseUrl + '/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-    body: JSON.stringify({
-      model: ctx.image ? cfg.visionModel : cfg.model, stream: false, max_tokens: 220,
-      messages: [{ role: 'system', content: systemPrompt() }, ...hist,
-        { role: 'user', content: ctx.image ? [{ type: 'text', text: cue }, { type: 'image_url', image_url: { url: ctx.image } }] : cue }],
-    }),
-    signal: AbortSignal.timeout(45000),
-  });
-  if (!r.ok) {
-    let detail = '';
-    try { detail = (await r.text()).slice(0, 200); } catch (_) {}
-    throw new Error(`接口返回 ${r.status}${detail ? '：' + detail : ''}`);
+  let text = '', st = [], why = '';
+  // an empty answer gets one more try with more room (a model that thinks first can use up the 220 tokens)
+  for (const maxTokens of [220, 600]) {
+    const r = await fetch(cfg.baseUrl + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model: ctx.image ? cfg.visionModel : cfg.model, stream: false, max_tokens: maxTokens,
+        messages: [{ role: 'system', content: systemPrompt() }, ...hist,
+          { role: 'user', content: ctx.image ? [{ type: 'text', text: cue }, { type: 'image_url', image_url: { url: ctx.image } }] : cue }],
+      }),
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!r.ok) {
+      let detail = '';
+      try { detail = (await r.text()).slice(0, 200); } catch (_) {}
+      throw new Error(`接口返回 ${r.status}${detail ? '：' + detail : ''}`);
+    }
+    const j = await r.json();
+    const choice = (j.choices && j.choices[0]) || {};
+    const raw = (choice.message && choice.message.content) || '';
+    const parsed = stickers.parseReply(visible(raw), packs());
+    text = parsed.text.replace(/^["“「『]+|["”」』]+$/g, '').trim();
+    st = cfg.stickers === 'off' ? [] : parsed.stickers;
+    if (text || st.length) break;
+    why = `finish_reason=${choice.finish_reason || '?'}, ${raw.length} chars before cleanup`;   // goes to error.log
   }
-  const j = await r.json();
-  let text = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
-  const parsed = stickers.parseReply(visible(text), packs());
-  text = parsed.text.replace(/^["“「『]+|["”」』]+$/g, '').trim();
-  const st = cfg.stickers === 'off' ? [] : parsed.stickers;
-  if (!text && !st.length) throw new Error('empty');
+  if (!text && !st.length) throw new Error(`empty (${why})`);
   chat.messages.push({ role: 'assistant', content: text || '（发了一个表情）', t: Date.now(), proactive: kind, ...(st.length ? { stickers: st } : {}) });
   saveChat();
   return { text, stickers: st };

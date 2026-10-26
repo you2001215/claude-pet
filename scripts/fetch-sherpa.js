@@ -27,6 +27,9 @@ const pkgs = ['sherpa-onnx-node', ...wanted.map((w) => {
 
 fs.mkdirSync(DEST, { recursive: true });
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// Windows' own tar (bsdtar). In Git Bash, "tar" is GNU tar, which reads "C:\..." as host "C" and fails
+const winTar = process.platform === 'win32' && path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+const tar = winTar && fs.existsSync(winTar) ? winTar : 'tar';
 for (const name of pkgs) {
   const out = path.join(DEST, name);
   try {
@@ -35,7 +38,7 @@ for (const name of pkgs) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sherpa-'));
   console.log(`get  ${name}@${VERSION}`);
   const file = execFileSync(npm, ['pack', `${name}@${VERSION}`, '--silent', '--pack-destination', tmp], { encoding: 'utf8', shell: process.platform === 'win32' }).trim().split(/\r?\n/).pop();
-  execFileSync('tar', ['-xzf', path.join(tmp, file), '-C', tmp]);
+  execFileSync(tar, ['-xzf', path.join(tmp, file), '-C', tmp]);
   fs.rmSync(out, { recursive: true, force: true });
   fs.cpSync(path.join(tmp, 'package'), out, { recursive: true });   // copy, not rename: the temp folder may be on another drive
   fs.rmSync(tmp, { recursive: true, force: true });
