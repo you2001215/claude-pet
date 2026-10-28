@@ -38,6 +38,8 @@ const defaults = {
   whisper: 'canned',        // her own muttering: off | canned (fixed lines) | mix (+ AI now and then) | ai (AI most of the time)
   look: 'sometimes',        // glance at the screen while a browser is in front: off | sometimes | often
   visionModel: 'deepseek-flash',
+  memoryWhere: 'local',     // local | folder (persona and memories live in sharedDir, which other computers / AstrBot can share)
+  sharedDir: '',
 };
 const packs = () => [...(cfg.stickerDuo ? ['大肥鱼', '大肥鱼和GPT娘'] : ['大肥鱼']), ...(cfg.memes ? ['meme'] : [])];
 let outfit = 'claude';
@@ -70,9 +72,161 @@ function saveCfg() {
   fs.writeFileSync(cfgPath, JSON.stringify({ cfg, key: keyBlob, keyPlain }, null, 1));
 }
 function saveChat() {
-  chat.messages = chat.messages.slice(-80);
-  chat.notes = chat.notes.slice(-60);
+  chat.messages = chat.messages.slice(-MAX_MSGS);
+  chat.notes = chat.notes.slice(-MAX_NOTES);
   fs.writeFileSync(chatPath, JSON.stringify(chat, null, 1));
+}
+
+// ---- shared folder: the persona, the remembered things, the recent chat and the "when did we last meet" state can live
+// in a folder the user picks instead of only here. Put it in a synced drive (Google Drive, OneDrive, iCloud...) and every
+// computer that picks the same folder, plus the AstrBot plugin, is one and the same 大肥鱼. cfg.persona, chat.notes,
+// chat.messages and chat.state stay as a local copy, used whenever the folder can't be read (not synced yet, offline).
+const MAX_NOTES = 120;
+const MAX_MSGS = 200;
+const PERSONA_FILE = '人设.md';
+const MEMORY_FILE = '记忆.json';
+const CHAT_FILE = '聊天记录.json';
+const STATE_FILE = '陪伴状态.json';
+const DEVICE = '桌宠 ' + ({ darwin: 'Mac', win32: 'Windows' }[process.platform] || 'Linux');
+const place = (from) => (from === DEVICE ? '这台电脑上' : from === 'AstrBot' ? '聊天软件里' : `「${from}」上`);
+const newMsg = (role, content, extra = {}) => ({ id: `${DEVICE}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, role, content, t: Date.now(), from: DEVICE, ...extra });
+const useFolder = () => cfg.memoryWhere === 'folder' && !!cfg.sharedDir;
+let folderState = { ok: true, error: '', count: 0 };
+let folderReadAt = 0;
+let shownNotes = [];         // the notes the settings page was given, so a save only removes what the user deleted there
+
+const stamp = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
+async function readMemories(dir) {
+  const raw = JSON.parse(await fs.promises.readFile(path.join(dir, MEMORY_FILE), 'utf8'));
+  return (Array.isArray(raw.memories) ? raw.memories : []).filter((m) => m && typeof m.text === 'string' && m.text.trim());
+}
+async function writeMemories(dir, list) {
+  const body = {
+    说明: '大肥鱼的共享记忆。桌宠和 AstrBot 插件都会读写这个文件；可以直接改，一条记忆一项，text 是内容，from 是在哪边记下的。',
+    memories: list.slice(-MAX_NOTES),
+  };
+  await fs.promises.writeFile(path.join(dir, MEMORY_FILE), JSON.stringify(body, null, 1));
+}
+
+// re-read the folder (at most every 20 s unless forced); keeps the local copy when it fails
+async function refresh(force = false) {
+  if (!useFolder()) return;
+  if (!force && Date.now() - folderReadAt < 20000) return;
+  folderReadAt = Date.now();
+  try {
+    const persona = (await fs.promises.readFile(path.join(cfg.sharedDir, PERSONA_FILE), 'utf8')).trim();
+    const list = await readMemories(cfg.sharedDir);
+    if (persona) cfg.persona = persona;
+    chat.notes = list.map((m) => m.text.trim());
+    await syncChat();
+    folderState = { ok: true, error: '', count: list.length };
+  } catch (e) {
+    folderState = { ok: false, error: e.code === 'ENOENT' ? '文件夹里找不到 人设.md 或 记忆.json（云盘可能还没同步好）' : e.message, count: 0 };
+  }
+}
+
+// chat history: union of the folder's and this computer's messages by id, in time order. Clearing writes clearedAt so
+// a copy elsewhere can't bring the old messages back.
+const msgKey = (m) => m.id || `${m.t}|${m.role}|${m.content}`;
+async function syncChat() {
+  let shared = { clearedAt: 0, messages: [] };
+  try { shared = { ...shared, ...JSON.parse(await fs.promises.readFile(path.join(cfg.sharedDir, CHAT_FILE), 'utf8')) }; } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const clearedAt = Math.max(shared.clearedAt || 0, chat.clearedAt || 0);
+  const seen = new Map();
+  for (const m of [...(shared.messages || []), ...chat.messages]) if (m && m.t > clearedAt && !seen.has(msgKey(m))) seen.set(msgKey(m), m);
+  const merged = [...seen.values()].sort((a, b) => a.t - b.t).slice(-MAX_MSGS);
+  const same = (list) => list.length === merged.length && list.every((m, i) => msgKey(m) === msgKey(merged[i]));
+  if (!same(shared.messages || []) || clearedAt !== (shared.clearedAt || 0)) {
+    await fs.promises.writeFile(path.join(cfg.sharedDir, CHAT_FILE), JSON.stringify({ clearedAt, messages: merged }, null, 1));
+  }
+  if (!same(chat.messages) || clearedAt !== (chat.clearedAt || 0)) { chat.messages = merged; chat.clearedAt = clearedAt; saveChat(); }
+}
+async function pushChat() {
+  if (!useFolder()) return;
+  try { await syncChat(); } catch (_) { /* stays local; goes up with the next sync */ }
+}
+
+// ---- meeting: which day we first met, how many days in a row, when (and where) we saw each other today and last.
+// Every computer and the AstrBot plugin update the same state, so opening the other computer later the same day is
+// not "the first time today".
+const p2 = (n) => String(n).padStart(2, '0');
+const dayOf = (t) => { const d = new Date(t); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
+const dayGap = (a, b) => Math.round((new Date(b + 'T00:00') - new Date(a + 'T00:00')) / 86400000);
+async function seen() {
+  const file = useFolder() && path.join(cfg.sharedDir, STATE_FILE);
+  let st = { ...(chat.state || {}) };
+  if (file) { try { st = JSON.parse(await fs.promises.readFile(file, 'utf8')); } catch (_) { /* new folder or unreadable: start from the local copy */ } }
+  const now = Date.now(), today = dayOf(now);
+  const prev = st.lastSeen || null;
+  let info;
+  if (st.lastDay !== today) {
+    const gap = st.lastDay ? dayGap(st.lastDay, today) : null;
+    st.streak = gap === 1 ? (st.streak || 0) + 1 : 1;
+    st.daysMet = (st.daysMet || 0) + 1;
+    st.firstMet = st.firstMet || today;
+    st.lastDay = today;
+    st.todayFirst = { t: now, from: DEVICE };
+    info = { firstToday: true, daysAway: gap, prev };
+  } else info = { firstToday: false, todayFirst: st.todayFirst, prev };
+  st.lastSeen = { t: now, from: DEVICE };
+  chat.state = st;
+  saveChat();
+  if (file) { try { await fs.promises.writeFile(file, JSON.stringify(st, null, 1)); } catch (_) {} }
+  return info;
+}
+
+const hm = (t) => { const d = new Date(t); return `${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 2 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`; };
+const FOLLOW_UP = '看看最近的聊天里他说过要去做什么（比如去吃饭、去开会、出门），还没下文的话自然地接着问一句（比如"吃完啦？"），没有就随口说一句。';
+function meetHint(m) {
+  if (!m) return '';
+  if (m.firstToday) {
+    if (m.daysAway == null && !chat.messages.length && !chat.notes.length) return '这是你们第一次见面，跟他打个招呼、简单介绍一下自己。';
+    if (m.daysAway >= 3) return `你们已经 ${m.daysAway} 天没见了，今天第一次见面，跟他打个招呼，可以说说想他了。`;
+    return '';
+  }
+  const first = m.todayFirst ? `${hm(m.todayFirst.t)} 在${place(m.todayFirst.from)}第一次见` : '早些时候见过';
+  const last = m.prev ? `，最近一次是 ${ago(m.prev.t)} 在${place(m.prev.from)}` : '';
+  const moved = m.prev && m.prev.from !== DEVICE ? '换到这台电脑上来找你' : '又把你叫出来';
+  return `今天你们已经见过了（${first}${last}）。用户刚${moved}，不要当成今天第一次见面，不要说早上好之类的初次问候。${FOLLOW_UP}`;
+}
+
+// change the folder's memory list: read it fresh, apply fn, write it back
+async function editMemories(fn) {
+  let list = [];
+  try { list = await readMemories(cfg.sharedDir); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  list = fn(list);
+  await writeMemories(cfg.sharedDir, list);
+  chat.notes = list.map((m) => m.text.trim()).slice(-MAX_NOTES);
+  folderState = { ok: true, error: '', count: list.length };
+}
+
+async function addNotes(texts) {
+  texts = texts.filter((t) => !chat.notes.includes(t));
+  if (!texts.length) return;
+  if (!useFolder()) { chat.notes.push(...texts); return; }
+  try {
+    await editMemories((list) => [...list, ...texts.filter((t) => !list.some((m) => m.text.trim() === t)).map((text) => ({ text, from: DEVICE, time: stamp() }))]);
+  } catch (_) { chat.notes.push(...texts); }   // keep it locally at least
+}
+
+// moving to a folder: an existing persona there wins, this computer's memories are merged in
+async function joinFolder(dir) {
+  try {
+    if (!(await fs.promises.stat(dir)).isDirectory()) throw new Error('不是文件夹');
+    const pf = path.join(dir, PERSONA_FILE);
+    if (!fs.existsSync(pf)) await fs.promises.writeFile(pf, cfg.persona + '\n');
+    let list = [];
+    try { list = await readMemories(dir); } catch (e) { if (e.code !== 'ENOENT') throw new Error('记忆.json 格式不对：' + e.message); }
+    const add = chat.notes.filter((t) => !list.some((m) => m.text.trim() === t)).map((text) => ({ text, from: DEVICE, time: stamp() }));
+    if (add.length || !fs.existsSync(path.join(dir, MEMORY_FILE))) await writeMemories(dir, [...list, ...add]);
+    return '';
+  } catch (e) { return '用不了这个文件夹：' + (e.code === 'ENOENT' ? '文件夹不存在' : e.code === 'EACCES' || e.code === 'EPERM' ? '没有写入权限' : e.message); }
 }
 
 function setKey(k) {
@@ -93,15 +247,34 @@ function getKey() {
 }
 const mask = (k) => (k ? k.slice(0, 5) + '…' + k.slice(-4) : '');
 
-function publicSettings() {
+async function publicSettings() {
+  await refresh(true);
   const k = getKey();
-  return { ...cfg, hasKey: !!k, keyMasked: mask(k), notes: chat.notes.slice(), defaultPersona: DEFAULT_PERSONA, encrypted: !keyPlain, stickerCredit: stickers.attribution() };
+  shownNotes = chat.notes.slice();
+  return {
+    ...cfg, hasKey: !!k, keyMasked: mask(k), notes: shownNotes.slice(), defaultPersona: DEFAULT_PERSONA, encrypted: !keyPlain, stickerCredit: stickers.attribution(),
+    folder: useFolder() ? folderState : null,
+  };
 }
 
-function updateSettings(s) {
+async function updateSettings(s) {
   if (typeof s.baseUrl === 'string') cfg.baseUrl = s.baseUrl.trim().replace(/\/+$/, '') || defaults.baseUrl;
   if (typeof s.model === 'string') cfg.model = s.model.trim() || defaults.model;
-  if (typeof s.persona === 'string') cfg.persona = s.persona.trim() || DEFAULT_PERSONA;
+  // switching where memories live: the persona and notes on the page belong to the old place, so they are not applied
+  const where = ['local', 'folder'].includes(s.memoryWhere) ? s.memoryWhere : cfg.memoryWhere;
+  const dir = typeof s.sharedDir === 'string' ? s.sharedDir.trim() : cfg.sharedDir;
+  const moving = (where === 'folder' && !!dir) !== useFolder() || (where === 'folder' && dir && dir !== cfg.sharedDir);
+  let error = '';
+  if (moving && where === 'folder') error = await joinFolder(dir);
+  if (!error) { cfg.memoryWhere = where; cfg.sharedDir = dir; }
+  if (!moving) {
+    const before = cfg.persona;
+    if (typeof s.persona === 'string') cfg.persona = s.persona.trim() || DEFAULT_PERSONA;
+    if (Array.isArray(s.notes)) await setNotes(s.notes.map((n) => String(n).trim()).filter(Boolean));
+    if (useFolder() && cfg.persona !== before) {
+      try { await fs.promises.writeFile(path.join(cfg.sharedDir, PERSONA_FILE), cfg.persona + '\n'); } catch (e) { error = '人格没能写进共享文件夹：' + e.message; }
+    }
+  }
   if (typeof s.memoryOn === 'boolean') cfg.memoryOn = s.memoryOn;
   if (Number.isFinite(s.historyTurns)) cfg.historyTurns = Math.max(2, Math.min(40, Math.round(s.historyTurns)));
   if (['off', 'moments', 'hourly', 'often'].includes(s.proactive)) cfg.proactive = s.proactive;
@@ -113,9 +286,23 @@ function updateSettings(s) {
   if (typeof s.visionModel === 'string') cfg.visionModel = s.visionModel.trim() || defaults.visionModel;
   if (typeof s.key === 'string' && s.key.trim()) setKey(s.key);
   if (s.clearKey) setKey('');
-  if (Array.isArray(s.notes)) chat.notes = s.notes.map((n) => String(n).trim()).filter(Boolean).slice(-60);
   saveCfg(); saveChat();
-  return publicSettings();
+  return { ...(await publicSettings()), error };
+}
+
+// the settings page's list: in a shared folder only apply what changed on the page, so memories that another computer
+// added in the meantime are kept
+async function setNotes(list) {
+  if (!useFolder()) { chat.notes = list.slice(-MAX_NOTES); return; }
+  const removed = shownNotes.filter((t) => !list.includes(t));
+  const added = list.filter((t) => !shownNotes.includes(t));
+  if (!removed.length && !added.length) return;
+  try {
+    await editMemories((cur) => [
+      ...cur.filter((m) => !removed.includes(m.text.trim())),
+      ...added.filter((t) => !cur.some((m) => m.text.trim() === t)).map((text) => ({ text, from: DEVICE, time: stamp() })),
+    ]);
+  } catch (_) { chat.notes = list.slice(-MAX_NOTES); }
 }
 
 // ---- DeepSeek Harness import: read the key/model dsh already has (~/.dsh)
@@ -196,11 +383,12 @@ let controller = null;
 async function send(text, onDelta, opts = {}) {
   const key = getKey();
   if (!key) throw Object.assign(new Error('还没有设置 API Key'), { code: 'nokey' });
+  await refresh();
   if (controller) controller.abort();
   controller = new AbortController();
   const ctl = controller;
 
-  chat.messages.push({ role: 'user', content: opts.image ? `${text}\n（附了一张屏幕截图）` : text, t: Date.now() });
+  chat.messages.push(newMsg('user', opts.image ? `${text}\n（附了一张屏幕截图）` : text));
   const hist = buildHistory();
   const rl = reminders.contextLine();
   const head = `[${nowLine()}${rl ? ' ' + rl : ''}]\n${text}`;
@@ -269,19 +457,23 @@ async function send(text, onDelta, opts = {}) {
   const parsed = stickers.parseReply(visible(full), packs());
   const reply = parsed.text || (parsed.stickers.length ? '' : '……');
   const st = cfg.stickers === 'off' ? [] : parsed.stickers;
-  if (cfg.memoryOn) for (const m of mems) if (!chat.notes.includes(m)) chat.notes.push(m);
-  chat.messages.push({ role: 'assistant', content: reply || '（发了一个表情）', t: Date.now(), ...(st.length ? { stickers: st } : {}) });
+  if (cfg.memoryOn) await addNotes(mems);
+  chat.messages.push(newMsg('assistant', reply || '（发了一个表情）', st.length ? { stickers: st } : {}));
   saveChat();
+  await pushChat();
   return { reply, remembered: mems, stickers: st, remindAdd, remindCancel };
 }
 
-// recent turns, oldest first, with same-role neighbours merged (keeps the API happy)
+// recent turns, oldest first, with same-role neighbours merged (keeps the API happy). What the user said on another
+// computer or in the chat app is marked with the time and place, so she knows it was earlier and elsewhere.
 function buildHistory() {
   const out = [];
   for (const m of chat.messages.slice(-(cfg.historyTurns * 2 + 1))) {
+    const when = dayOf(m.t) === dayOf(Date.now()) ? hm(m.t) : `${dayOf(m.t).slice(5)} ${hm(m.t)}`;
+    const content = m.role === 'user' && m.from && m.from !== DEVICE ? `[${when}，在${place(m.from)}] ${m.content}` : m.content;
     const last = out[out.length - 1];
-    if (last && last.role === m.role) last.content += '\n' + m.content;
-    else out.push({ role: m.role, content: m.content });
+    if (last && last.role === m.role) last.content += '\n' + content;
+    else out.push({ role: m.role, content });
   }
   while (out.length && out[0].role !== 'user') out.shift();
   return out;
@@ -289,8 +481,13 @@ function buildHistory() {
 
 // ---- proactive: she starts the conversation herself
 const HINTS = {
-  startup: () => '用户刚打开电脑、把你叫出来，这是你们今天第一次见面，跟他打个招呼。',
-  return: (c) => `用户离开电脑大约 ${c.awayMin || 10} 分钟，刚刚回来。`,
+  startup: (c) => meetHint(c.meet) || '用户刚打开电脑、把你叫出来，这是你们今天第一次见面，跟他打个招呼。如果最近的聊天里他说过要去做的事，可以顺口问问后来怎么样了。',
+  return: (c) => {
+    if (c.meet && c.meet.firstToday) return `用户离开电脑大约 ${c.awayMin || 10} 分钟，刚刚回来，这是你们今天第一次见面。` + (meetHint(c.meet) || '跟他打个招呼。');
+    const p = c.meet && c.meet.prev;
+    const elsewhere = p && p.from !== DEVICE && Date.now() - p.t < (c.awayMin || 10) * 60000;
+    return `用户离开这台电脑大约 ${c.awayMin || 10} 分钟，刚刚回来。` + (elsewhere ? `这段时间他在${place(p.from)}找过你（${ago(p.t)}）。${FOLLOW_UP}` : '');
+  },
   rest: (c) => `用户已经连续用电脑大约 ${c.activeMin || 50} 分钟没休息了，提醒他起来活动一下、喝口水或者看看远处。`,
   night: () => '已经是深夜了，用户还在用电脑。关心一下他，劝他早点睡。',
   look: () => '附图是用户电脑屏幕现在的截图，你悄悄看了一眼他在浏览什么。是视频就聊聊画面和内容，是文章或网页就点评一下内容或观点，看不清就随口问一句他在看什么。不要复述屏幕上的隐私信息（聊天记录、账号、金额、个人信息等）。',
@@ -301,6 +498,7 @@ const HINTS = {
 async function proactive(kind, ctx = {}) {
   const key = getKey();
   if (!key) throw new Error('nokey');
+  await refresh();
   const hint = (HINTS[kind] || HINTS.chat)(ctx);
   const hist = buildHistory();
   const limit = kind === 'reminder' ? 60 : kind === 'lookAsk' ? 90 : kind === 'look' ? 60 : 40;
@@ -334,8 +532,9 @@ async function proactive(kind, ctx = {}) {
     why = `finish_reason=${choice.finish_reason || '?'}, ${raw.length} chars before cleanup`;   // goes to error.log
   }
   if (!text && !st.length) throw new Error(`empty (${why})`);
-  chat.messages.push({ role: 'assistant', content: text || '（发了一个表情）', t: Date.now(), proactive: kind, ...(st.length ? { stickers: st } : {}) });
+  chat.messages.push(newMsg('assistant', text || '（发了一个表情）', { proactive: kind, ...(st.length ? { stickers: st } : {}) }));
   saveChat();
+  await pushChat();
   return { text, stickers: st };
 }
 
@@ -351,6 +550,7 @@ async function whisper(ctx = {}) {
   if (Date.now() - lastWhisperAt < gap) return { ok: false, reason: 'rate' };
   if (controller) return { ok: false, reason: 'busy' };
   lastWhisperAt = Date.now();
+  await refresh();
   const doing = ctx.action ? `你正在做的动作：「${ctx.action}」。` : '你正在桌面上待着。';
   const recent = recentWhispers.length ? `最近嘀咕过：${recentWhispers.map((x) => '「' + x + '」').join('')}，别重复。` : '';
   const cue = `[${nowLine()}]（这一条不是用户说的话，是给你的情境提示）${doing}自言自语嘀咕一句：口语化、俏皮，不超过 16 个字，和你正在做的事或者此刻的时间有关；不要问用户问题，不要打招呼，不要发表情包，不要写 <memory>。${recent}只输出这句话本身。`;
@@ -443,10 +643,10 @@ async function balance() {
 }
 
 function history() { return chat.messages.slice(-40).map(({ role, content, stickers: st }) => ({ role, content, stickers: st || [] })); }
-function clearHistory() { chat.messages = []; saveChat(); }
+async function clearHistory() { chat.messages = []; chat.clearedAt = Date.now(); saveChat(); await pushChat(); }
 
 module.exports = {
-  init, publicSettings, updateSettings, importFromDsh, send, abort, test, listModels, history, clearHistory, proactive, balance, setOutfit,
+  init, publicSettings, updateSettings, importFromDsh, send, abort, test, listModels, history, clearHistory, proactive, balance, setOutfit, seen,
   hasKey: () => !!getKey(), busy: () => !!controller, proactiveMode: () => cfg.proactive, lookMode: () => cfg.look,
   whisper, whisperMode: () => cfg.whisper,
 };

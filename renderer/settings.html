@@ -39,6 +39,22 @@
   </div>
 
   <div class="card">
+    <h2>人格和记忆存在哪</h2>
+    <div class="row">
+      <select id="memoryWhere">
+        <option value="local">只存在这台电脑上</option>
+        <option value="folder">存在我选的文件夹里（几台电脑或 AstrBot 共用）</option>
+      </select>
+    </div>
+    <div class="row inline" id="folderRow">
+      <input id="sharedDir" readonly placeholder="还没选文件夹" style="flex:1">
+      <button class="ghost" id="pickFolder">选择文件夹</button>
+    </div>
+    <p class="note">想在几台电脑之间共用，就把文件夹建在会自动同步的网盘里（谷歌云盘、OneDrive、iCloud、坚果云等），每台电脑都选同一个文件夹。文件夹里会存人格、记住的事、最近的聊天和「今天见过没有」，所以在一台电脑上聊过、见过，换到另一台电脑她也知道。切过去时，这台电脑已有的记忆和聊天会合并进去；切回来时，用的是最后一次读到的那份。</p>
+    <div class="msgline" id="folderMsg"></div>
+  </div>
+
+  <div class="card">
     <h2>人格</h2>
     <div class="row">
       <textarea id="persona" rows="9" spellcheck="false"></textarea>

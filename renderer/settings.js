@@ -20,6 +20,18 @@
     $('memes').checked = s.memes !== false;
     $('look').value = s.look;
     $('visionModel').value = s.visionModel;
+    $('memoryWhere').value = s.memoryWhere || 'local';
+    $('sharedDir').value = s.sharedDir || '';
+    showFolder(s);
+  }
+
+  function showFolder(s) {
+    const folder = $('memoryWhere').value === 'folder';
+    $('folderRow').style.display = folder ? '' : 'none';
+    if (s && s.error) msg('folderMsg', s.error, false);
+    else if (!folder) msg('folderMsg', '', true);
+    else if (s && s.folder) msg('folderMsg', s.folder.ok ? `正在用这个文件夹，里面有 ${s.folder.count} 条记忆` : `读不到文件夹，先用这台电脑上的副本：${s.folder.error}`, s.folder.ok);
+    else msg('folderMsg', $('sharedDir').value ? '点「保存」后开始用这个文件夹' : '先选一个文件夹', true);
   }
 
   function collect() {
@@ -38,6 +50,8 @@
       memes: $('memes').checked,
       look: $('look').value,
       visionModel: $('visionModel').value,
+      memoryWhere: $('memoryWhere').value,
+      sharedDir: $('sharedDir').value,
     };
   }
 
@@ -85,6 +99,17 @@
     if (!confirm('删除保存的 API Key？')) return;
     fill(await U.saveSettings({ clearKey: true }));
     msg('connMsg', 'key 已删除', true);
+  });
+  // switching where memories live saves right away, so the persona and notes shown below come from the new place
+  $('memoryWhere').addEventListener('change', async () => {
+    if ($('memoryWhere').value === 'folder' && !$('sharedDir').value) { showFolder(null); return; }
+    fill(await save());
+  });
+  $('pickFolder').addEventListener('click', async () => {
+    const d = await U.pickFolder();
+    if (!d) return;
+    $('sharedDir').value = d;
+    fill(await save());
   });
   $('resetPersona').addEventListener('click', () => { if (current) $('persona').value = current.defaultPersona; });
   $('save').addEventListener('click', async () => { await save(); msg('saveMsg', '已保存', true); });

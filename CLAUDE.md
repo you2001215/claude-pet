@@ -36,6 +36,7 @@ npm start        # prestart 会先跑 scripts/fetch-sherpa.js，下载离线语�
   - `settings.json`：尺寸、位置、造型；
   - `ai.json`：AI 设置和加密的 Key；
   - `chat.json`：聊天记录和记住的事；
+    - 设置里选了「存在我选的文件夹里」时，以那个文件夹为准（`ai.js` 的 `refresh()`），`ai.json`/`chat.json` 里的只是副本。文件夹里有 `人设.md`、`记忆.json`、`聊天记录.json`（按消息 id 合并，`clearedAt` 防止清空后被旧副本带回来）、`陪伴状态.json`（认识日期、连续天数、今天第一次和最近一次在哪见的，`seen()` 更新，开机打招呼据此判断是不是今天第一次见）。这个文件夹可以放在同步盘里，给几台电脑和 AstrBot 插件（`integrations/astrbot_plugin_dafeiyu_memory/`）共用，插件只在主人私聊时读写聊天和状态。以后的亲密度也放在 `陪伴状态.json` 里。
   - `reminders.json`、`voice.json`；
   - `voice-models/`、`stickers/`（缓存）；
   - `error.log`：未捕获的异常都写在这里，不弹窗。
@@ -104,11 +105,12 @@ npm start        # prestart 会先跑 scripts/fetch-sherpa.js，下载离线语�
 
 ## 待办
 
-- **Claude 装动画：** 已有 9 段：待机、东张西望、原地走路、思考中、说话、挥手打招呼、被摸头、被点开心、傲娇生气。`art-source/动画提示词.md` 里还剩 9 条（睡觉、打哈欠伸懒腰、吃白饭、到点提醒、两条余额、敲键盘、看屏幕、吐泡泡），用户会陆续用 AI 视频工具做好发过来。处理流程：
+- **Claude 装动画：** 已有 12 段：待机、东张西望、原地走路、思考中、说话、挥手打招呼、被摸头、被点开心、傲娇生气、睡觉、打哈欠伸懒腰、吃白饭。`art-source/动画提示词.md` 里还剩 6 条（到点提醒、两条余额、敲键盘、看屏幕、吐泡泡），用户会陆续用 AI 视频工具做好发过来。处理流程：
   1. 先看内容：AI 视频常常时长不对、动作只占一段、带水印或会染色背景的特效，要先裁剪/涂掉再处理（做法见 `art-source/README.md` 的「动画」一行）；
   2. 运行 `python tools/process_clip.py 输入.mp4 assets/claude/动作名.webm 预览.png`，检查预览图；
   3. 在 `assets/claude/clips.json` 里登记时长和循环段（循环段按帧差找最像的两帧）；
-  4. 接进 `renderer/pet.js`：「状态 → 片段」写在 `claudeClip()`，键名和女仆装 `clips.json` 一致（walk、think、talk、pat、sulk、greet、clicks）。没有片段的状态（睡觉、坐、拖拽、掉落、伸懒腰）仍画立绘。
+  4. 接进 `renderer/pet.js`：「状态 → 片段」写在 `claudeClip()`，键名和女仆装 `clips.json` 一致（walk、think、talk、pat、sulk、greet、clicks、sleep、rest）。叫醒时播 `睡觉` 从 `wakeFrom` 开始的站起来那段；`acts` 是闲着时按时段偶尔做的小动作（`claudeAct()`，每个至少隔 20 分钟），以后做好吐泡泡这类动作就登记到这里。没有片段的状态（坐、拖拽、掉落）仍画立绘。
+  5. 新动作做好后，把 `design/亲密度与事件.xlsx`「下拉选项」表里「动作」列对应的「（待做）」去掉，新动作加进去，并同步改命名区域「列表_动作」的范围。
 - **Windows 上处理视频：** 用户电脑上用 winget 装了 Python 3.12（`%LOCALAPPDATA%\Programs\Python\Python312`，已装 numpy、pillow、scipy）和 ffmpeg（`Gyan.FFmpeg`）。在 Git Bash 里 `fetch-sherpa.js` 会因为 GNU tar 把 `C:` 当成远程主机而失败，`npm start` 要在 PowerShell 里跑。
 - **立绘：** 「喝水」「对着电脑打字」还没生成（提示词在 `art-source/立绘提示词.md`）。
   - 立绘处理没有现成脚本：要抠掉绿幕或白底，再在 `assets/pet/pet.json` 里登记 `feetX`、`feetY`、`headTop`。

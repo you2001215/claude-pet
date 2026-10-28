@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, protocol, net, powerMonitor, shell, Notification, desktopCapturer, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, protocol, net, powerMonitor, shell, Notification, desktopCapturer, systemPreferences, dialog } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -381,9 +381,13 @@ function balanceTier(b) {
 }
 ipcMain.handle('reminders:delete', (_e, id) => { const ok = reminders.remove(id); refreshTray(); return ok; });
 ipcMain.handle('stickers:status', () => stickers.status());
-ipcMain.handle('ai:clear', () => { ai.clearHistory(); return true; });
+ipcMain.handle('ai:clear', async () => { await ai.clearHistory(); return true; });
 ipcMain.handle('ai:settings:get', () => ai.publicSettings());
-ipcMain.handle('ai:settings:set', (_e, s) => { const r = ai.updateSettings(s || {}); planNextChat(); planNextLook(); pushSettings(); return r; });
+ipcMain.handle('ai:settings:set', async (_e, s) => { const r = await ai.updateSettings(s || {}); planNextChat(); planNextLook(); pushSettings(); return r; });
+ipcMain.handle('ai:pick-folder', async () => {
+  const r = await dialog.showOpenDialog(settingsWin || undefined, { title: '选择存放人格和记忆的文件夹', properties: ['openDirectory', 'createDirectory'] });
+  return r.canceled ? '' : r.filePaths[0] || '';
+});
 ipcMain.handle('ai:import-dsh', () => { try { return ai.importFromDsh(); } catch (e) { return { ok: false, error: e.message }; } });
 ipcMain.handle('ai:test', () => ai.test());
 ipcMain.handle('ai:models', () => ai.listModels());
@@ -404,7 +408,8 @@ ipcMain.on('ui:open-url', (_e, url) => {
   } catch (_) {}
 });
 ipcMain.handle('ai:will-greet', () => ai.hasKey() && ai.proactiveMode() !== 'off');
-ipcMain.on('ai:greet', () => { speakUp('startup'); });
+let startMeet = Promise.resolve(null);
+ipcMain.on('ai:greet', async () => { speakUp('startup', { meet: await startMeet }); });
 
 // ---------- proactive talk: she starts a conversation by herself ----------
 const pro = {
@@ -549,7 +554,7 @@ function proactiveTick() {
     if (idle > 30) return;
     pro.away = false; pro.restAnchor = now;
     const awayMin = Math.round((now - pro.awayStart) / 60000);
-    if (now - pro.lastSaid > 5 * 60000) speakUp('return', { awayMin });
+    if (now - pro.lastSaid > 5 * 60000) ai.seen().then((meet) => speakUp('return', { awayMin, meet }), () => speakUp('return', { awayMin }));
     return;
   }
   const chatting = now - pro.lastUserChat < 5 * 60000 || ai.busy() || (chatWin && !chatWin.isDestroyed() && chatWin.isFocused());
@@ -613,6 +618,10 @@ app.whenReady().then(() => {
   loadSettings();
   stickers.init();
   ai.init();
+  // when we met (today first / last time, on which computer) is shared through the memory folder: note this start,
+  // and keep noting it every few minutes while the user is at the computer
+  startMeet = ai.seen().catch(() => null);
+  setInterval(() => { if (powerMonitor.getSystemIdleTime() < 300) ai.seen().catch(() => {}); }, 5 * 60000);
   ai.setOutfit(settings.outfit);
   reminders.init();
   voice.init({ toPet: (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); }, broadcast: (ch, p) => { broadcast(ch, p); if (ch === 'voice:changed') refreshTray(); }, logError });

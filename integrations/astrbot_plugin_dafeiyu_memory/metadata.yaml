@@ -1,0 +1,7 @@
+name: astrbot_plugin_dafeiyu_memory
+display_name: 大肥鱼共享记忆
+desc: 和大肥鱼桌宠共用同一份人格和记忆（放在同步盘里的同一个文件夹）
+short_desc: 和大肥鱼桌宠共用人格和记忆
+version: 1.0.0
+author: you2001215
+repo: https://github.com/you2001215/claude-pet

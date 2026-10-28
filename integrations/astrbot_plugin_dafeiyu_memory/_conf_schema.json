@@ -1,0 +1,20 @@
+{
+  "shared_dir": {
+    "description": "共享文件夹的路径",
+    "type": "string",
+    "hint": "和桌宠「AI 设置 → 人格和记忆存在哪」选的是同一个文件夹（里面有 人设.md 和 记忆.json）。Mac 上的谷歌云盘一般在 ~/Library/CloudStorage/GoogleDrive-你的邮箱/我的云端硬盘/ 下面。",
+    "default": ""
+  },
+  "owner_ids": {
+    "description": "主人的账号 ID",
+    "type": "list",
+    "hint": "填你自己聊天账号的 ID（QQ 号等）。只有这些账号私聊时，才会用上和记下记忆、同步聊天记录、算作见过面；群聊和别人私聊只用人格，不提也不记你的私事。",
+    "default": []
+  },
+  "platform_hint": {
+    "description": "在聊天软件里额外告诉她的话",
+    "type": "text",
+    "hint": "接在人设后面。人设是按桌宠写的，这里说明她现在在聊天软件里。",
+    "default": "【现在的场合】你现在是在聊天软件里和人聊天，不是在电脑桌面上当桌宠：不能动、不能看屏幕、不能设提醒，也发不了桌宠里的表情包。"
+  }
+}

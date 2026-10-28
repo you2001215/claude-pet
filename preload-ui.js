@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('ui', {
   onDelta: (fn) => ipcRenderer.on('ai:delta', (_e, t) => fn(t)),
   getSettings: () => ipcRenderer.invoke('ai:settings:get'),
   saveSettings: (s) => ipcRenderer.invoke('ai:settings:set', s),
+  pickFolder: () => ipcRenderer.invoke('ai:pick-folder'),
   importDsh: () => ipcRenderer.invoke('ai:import-dsh'),
   test: () => ipcRenderer.invoke('ai:test'),
   models: () => ipcRenderer.invoke('ai:models'),
