@@ -137,9 +137,9 @@
     }
     state = s; stateT = 0; stateDur = dur ?? 4;
     if (s === 'walk') { walkDist = 0; }
-    // Claude outfit: waving and sulking have clips; the state lasts as long as the clip
-    if (!maid && (s === 'wave' || s === 'sulk')) {
-      const list = CCM ? (s === 'wave' ? CCM.greet : CCM.sulk && [CCM.sulk]) : null;
+    // Claude outfit: waving, sulking and stretching have clips; the state lasts as long as the clip
+    if (!maid && (s === 'wave' || s === 'sulk' || s === 'stretch')) {
+      const list = CCM ? { wave: CCM.greet, sulk: CCM.sulk && [CCM.sulk], stretch: CCM.rest }[s] : null;
       ccAct = list && list.length ? pick(list) : '';
       if (ccAct) { CC.play(ccAct, { restart: true }); stateDur = Math.max(stateDur, CC.dur(ccAct) - 0.12); }
     }
@@ -496,9 +496,10 @@
   // Claude outfit: our own clips where we have them; sprites for everything else (sleep, sit, drag, fall…)
   const CC = window.ClaudeClips;
   let CCM = null, ccAct = '';
-  const ONE_SHOT = ['look', 'act', 'sulk', 'wave'];   // these play ccAct once; the rest loop
+  const ONE_SHOT = ['look', 'act', 'sulk', 'wave', 'stretch'];   // these play ccAct once; the rest loop
   function claudeClip() {   // which clip goes with what she is doing right now ('' = draw the sprite)
-    if (maid || !CCM || sleeping) return '';
+    if (maid || !CCM) return '';
+    if (sleeping) return state === 'sleep' && CCM.sleep ? CCM.sleep : '';
     if (ONE_SHOT.includes(state)) return ccAct;
     const talking = (V && V.speaking) || now() < aiTalkUntil || aiStreaming;
     switch (state) {
@@ -510,6 +511,21 @@
     }
   }
   const claudeVideo = () => !!claudeClip();
+  // an occasional small action that fits the hour (clips.json "acts"); each one at most every 20 minutes
+  const actAt = {};
+  function claudeAct() {
+    if (!CCM || !CCM.acts) return '';
+    const h = new Date().getHours(), t = now();
+    const ok = Object.entries(CCM.acts).filter(([name, a]) => t - (actAt[name] ?? -1e9) > 20 * 60
+      && (!a.hours || a.hours.some(([from, to]) => h >= from && h < to)));
+    if (!ok.length) return '';
+    const name = pick(ok)[0];
+    actAt[name] = t;
+    return name;
+  }
+  function playClaudeAct(name, from = 0) {
+    ccAct = name; CC.play(name, { from, restart: true }); setState('act', CC.dur(name) - from - 0.12);
+  }
   function renderClaudeVideo(t) {
     CC.tick();
     const name = claudeClip();
@@ -624,7 +640,8 @@
       }
       case 'sleep': {
         zTimer -= dt;
-        if (zTimer <= 0 && !maid) { const h = headPoint(); spawn('z', h.x + 24 * (S / 0.45), h.y - 8, { vx: 10, vy: -16, max: 2.4, size: rand(0.8, 1.15) }); zTimer = rand(1.3, 1.9); }
+        // the Claude sleep clip has its own Z's
+        if (zTimer <= 0 && !maid && !claudeVideo()) { const h = headPoint(); spawn('z', h.x + 24 * (S / 0.45), h.y - 8, { vx: 10, vy: -16, max: 2.4, size: rand(0.8, 1.15) }); zTimer = rand(1.3, 1.9); }
         if (!onGround) { pos.y = Math.min(pos.y + 600 * dt, groundY()); }
         break;
       }
@@ -692,12 +709,14 @@
           }
           if (CCM && CCM.talk && ((V && V.speaking) || now() < aiTalkUntil)) { stateDur = stateT + 2; break; }   // keep the talking clip on
           const r = Math.random();
+          let act;
           if (cfg.walk && r < 0.45) { dir = Math.random() < 0.5 ? -1 : 1; setState('walk', rand(3, 9)); }
           else if (r < 0.6) {
             lookDir = Math.random() < 0.5 ? -1 : 1;
             if (CCM && CCM.turn && CCM.turn.length) { ccAct = pick(CCM.turn); CC.play(ccAct, { restart: true }); setState('look', CC.dur(ccAct) - 0.12); }
             else { ccAct = ''; setState('look', rand(1.4, 2.6)); }
           }
+          else if (r < 0.68 && (act = claudeAct())) playClaudeAct(act);
           else if (r < 0.78 && has('sit')) { sitFlip = 1; setState('sit', rand(12, 40)); squashV += 1.2; }
           else setState('idle', rand(3, 7));
         }
@@ -722,7 +741,8 @@
     if (!sleeping) return;
     sleeping = false; P.sleepState(false);
     if (maid && CM) { setAct('act', CM.sleep, 7.4); interact(); say(text || pick(L.wake)); return; }
-    if (has('stretch')) { setState('stretch', 2.4); }
+    if (CCM && CCM.sleep && CCM.wakeFrom) playClaudeAct(CCM.sleep, CCM.wakeFrom);   // the end of the sleep clip: she stands up
+    else if (has('stretch')) { setState('stretch', 2.4); }
     else { setState('idle', rand(3, 5)); jumpT = 0; squashV -= 1.2; }
     interact();
     say(text || pick(L.wake));
@@ -1071,6 +1091,7 @@
     line: (c) => { setAct('act', c); clipLine(c); }, whisperNow: () => idleWhisper(), get bubble() { return bubbleEl.classList.contains('hidden') ? '' : bubbleText.textContent; },
     get whisperMode() { return whisperMode; },
     get claudeClip() { return claudeVideo() ? CC.current() : ''; },
+    claudeAct: (c) => playClaudeAct(c),
     lookClip: () => { if (CCM) { ccAct = CCM.turn[0]; CC.play(ccAct, { restart: true }); setState('look', CC.dur(ccAct) - 0.12); } },
   };
   boot();
