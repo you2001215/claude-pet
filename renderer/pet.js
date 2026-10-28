@@ -671,7 +671,10 @@
       }
       case 'act': {
         if (!onGround) { vel.x = 0; vel.y = 0; update._saidLand = true; setState('fall'); break; }
-        if (stateT > stateDur || (stateT > 0.5 && (maid ? C : CC).ended())) setState('idle', rand(2, 4));
+        if (stateT > stateDur || (stateT > 0.5 && (maid ? C : CC).ended())) {
+          if (lookingScreen) setState('think', 1e9);
+          else setState('idle', rand(2, 4));
+        }
         break;
       }
       case 'wave':
@@ -994,18 +997,22 @@
       happyUntil = now() + 1;
       if (ev.tier != null && !['drag', 'fall', 'sleep'].includes(state)) {
         if (maid && CM) setAct('act', CM.balance[clamp(ev.tier, 0, 5)]);
+        else if (CCM && CCM.balance && CCM.balance[clamp(ev.tier, 0, 5)]) playClaudeAct(CCM.balance[clamp(ev.tier, 0, 5)]);
         else if (ev.tier >= 4) { spawn('sweat', headPoint().x + 26 * (S / 0.45), headPoint().y, { vx: 10, vy: -40, max: 1 }); }
       }
     } else if (ev.type === 'looking') {
       if (sleeping) { sleeping = false; P.sleepState(false); }
       lookingScreen = true;
-      if (state !== 'drag') setState('think', 1e9);
+      // Claude outfit: the magnifying glass first; the 'act' end goes on to thinking while she is still looking
+      if (!maid && CCM && CCM.look && !['drag', 'fall'].includes(state)) playClaudeAct(CCM.look);
+      else if (state !== 'drag') setState('think', 1e9);
       aiStreaming = true;
       sayLive('让我看看你在看什么…', 30);
     } else if (ev.type === 'reminder') {
       if (sleeping) { sleeping = false; P.sleepState(false); }
       if (!['drag', 'fall'].includes(state)) {
         if (maid && CM) setAct('act', CM.reminder);
+        else if (CCM && CCM.reminder) playClaudeAct(CCM.reminder);
         else if (has('wave')) setState('wave', 4); else { happyUntil = now() + 2; jumpT = 0; }
       }
       const t = shorten(ev.text || '', 110);
