@@ -1,6 +1,6 @@
 'use strict';
-// Video clips for the maid outfit (transparent VP9 webm from dsh-pet): plays one clip at a time,
-// cross-fades between clips, loops a section for long states, and knows which seasonal clips fit today.
+// Video clips (transparent VP9 webm; maid ones from dsh-pet): plays one clip at a time, cross-fades between
+// clips, loops a section for long states, and knows which seasonal clips fit today.
 function makeClips(BASE) {
   const FADE_MS = 160;
   let M = null;
@@ -13,6 +13,24 @@ function makeClips(BASE) {
   }
   const dur = (name) => (M && M.duration[name]) || 10;
   const busy = () => [cur, next, prev].filter(Boolean).map((c) => c.v);
+
+  // A seek drops the element to readyState 1 for a few frames, with nothing to draw. Right before an on-screen
+  // element seeks, its frame is copied here and drawn meanwhile, so loops and restarts never blink.
+  const snaps = new Map();          // <video> -> <canvas>
+  function snapshot(v) {
+    if (v.readyState < 2 || v.seeking || !v.videoWidth) return;   // no fresh frame: keep the older still
+    let c = snaps.get(v);
+    if (!c) { c = document.createElement('canvas'); snaps.set(v, c); }
+    if (c.width !== v.videoWidth || c.height !== v.videoHeight) { c.width = v.videoWidth; c.height = v.videoHeight; }
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, c.width, c.height);
+    try { g.drawImage(v, 0, 0, c.width, c.height); } catch (_) { snaps.delete(v); }
+  }
+  // every currentTime change goes through here
+  function seek(v, t) {
+    if (busy().includes(v)) snapshot(v);
+    try { v.currentTime = t; } catch (_) {}
+  }
 
   function video(name) {
     let v = cache.get(name);
@@ -27,7 +45,7 @@ function makeClips(BASE) {
       if (cache.size <= 8) break;
       if (old === v || live.includes(old)) continue;
       old.pause(); old.removeAttribute('src'); old.load();
-      cache.delete(k);
+      cache.delete(k); snaps.delete(old);
     }
     return v;
   }
@@ -43,11 +61,15 @@ function makeClips(BASE) {
     if (!M || !name) return;
     const target = next || cur;
     if (target && target.name === name && !restart) { target.loop = segOf(name, loop); return; }
-    const v = video(name);
+    const v = video(name), seg = segOf(name, loop);
+    // the same element already on screen (waking: the sleep clip from wakeFrom) takes the new loop now, or tick()
+    // would see it past its old loop end and seek it straight back before the new item is ready
+    for (const c of [cur, next]) if (c && c.v === v) { c.name = name; c.loop = seg; }
+    if (!busy().includes(v)) snaps.delete(v);                                 // a still from an earlier play
     if (next && next.v !== v && (!cur || next.v !== cur.v)) next.v.pause();   // a switch that never showed
-    const item = { name, v, loop: segOf(name, loop), ready: false, from };
+    seek(v, from);
+    const item = { name, v, loop: seg, ready: false, from };
     next = item;
-    try { v.currentTime = from; } catch (_) {}
     const p = v.play(); if (p && p.catch) p.catch(() => {});
     const mark = () => { if (next === item) item.ready = true; };
     if (typeof v.requestVideoFrameCallback === 'function') v.requestVideoFrameCallback(mark);
@@ -58,6 +80,7 @@ function makeClips(BASE) {
   function tick() {
     const t = performance.now();
     if (next && next.ready) {
+      if (prev && prev.v !== next.v && prev.v !== (cur && cur.v)) prev.v.pause();   // a fade cut short
       if (cur && cur.v !== next.v) { prev = cur; fadeAt = t; } else prev = null;
       cur = next; next = null; cur.since = t;
     }
@@ -65,21 +88,22 @@ function makeClips(BASE) {
       const v = cur.v;
       if (cur.loop) {
         const [a, b] = cur.loop;
-        if (v.ended || v.currentTime >= b - 0.03) { try { v.currentTime = a; } catch (_) {} const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+        if (v.ended || v.currentTime >= b - 0.03) { seek(v, a); const p = v.play(); if (p && p.catch) p.catch(() => {}); }
       }
     }
-    if (prev && t - fadeAt > FADE_MS) { if (!cur || prev.v !== cur.v) prev.v.pause(); prev = null; }
+    if (prev && t - fadeAt > FADE_MS) { if (prev.v !== (cur && cur.v) && prev.v !== (next && next.v)) prev.v.pause(); prev = null; }
   }
 
-  // what to draw this frame: [{ v, a }]
+  // what to draw this frame: [{ v, a }], v being the video or, while it seeks, its still
+  const frameOf = (c) => (!c ? null : c.v.readyState >= 2 && !c.v.seeking ? c.v : snaps.get(c.v) || null);
   function layers() {
     const out = [];
-    const ok = (c) => c && c.v.readyState >= 2;
-    if (prev && ok(prev) && ok(cur)) {
+    const a = frameOf(prev), b = frameOf(cur);
+    if (a && b) {
       const k = Math.min(1, (performance.now() - fadeAt) / FADE_MS);
-      out.push({ v: prev.v, a: 1 - k }, { v: cur.v, a: k });
-    } else if (ok(cur)) out.push({ v: cur.v, a: 1 });
-    else if (ok(prev)) out.push({ v: prev.v, a: 1 });
+      out.push({ v: a, a: 1 - k }, { v: b, a: k });
+    } else if (b) out.push({ v: b, a: 1 });
+    else if (a) out.push({ v: a, a: 1 });
     return out;
   }
 
@@ -89,19 +113,30 @@ function makeClips(BASE) {
   function stopAll() {
     for (const v of cache.values()) { v.pause(); }
     cur = next = prev = null;
+    snaps.clear();
   }
 
   // ---------- which random actions fit right now ----------
-  // lunar festivals by Gregorian date; [month-day] windows are inclusive
+  // lunar festivals by Gregorian date through 2040; [month-day] windows are inclusive. Worked out with Intl's
+  // chinese calendar (leap months skipped), each month start checked against the new moon in Beijing time: ICU is a
+  // day late for 2027 and early for 2030 Spring Festival, whose new moons fall a few minutes from midnight.
   const LUNAR = {
-    spring: ['2027-02-06', '2028-01-26', '2029-02-13'],
-    lantern: ['2027-02-20', '2028-02-09', '2029-02-27'],
-    dragon: ['2027-06-09', '2028-05-28', '2029-06-16'],
-    qixi: ['2026-08-19', '2027-08-08', '2028-08-26'],
-    ghost: ['2026-08-27', '2027-08-16', '2028-09-03'],
-    midautumn: ['2026-09-25', '2027-09-15', '2028-10-03'],
-    chongyang: ['2026-10-18', '2027-10-08', '2028-10-26'],
-    laba: ['2027-01-15', '2028-01-04', '2029-01-22'],
+    spring: ['2027-02-06', '2028-01-26', '2029-02-13', '2030-02-03', '2031-01-23', '2032-02-11', '2033-01-31',
+      '2034-02-19', '2035-02-08', '2036-01-28', '2037-02-15', '2038-02-04', '2039-01-24', '2040-02-12'],
+    lantern: ['2027-02-20', '2028-02-09', '2029-02-27', '2030-02-17', '2031-02-06', '2032-02-25', '2033-02-14',
+      '2034-03-05', '2035-02-22', '2036-02-11', '2037-03-01', '2038-02-18', '2039-02-07', '2040-02-26'],
+    dragon: ['2027-06-09', '2028-05-28', '2029-06-16', '2030-06-05', '2031-06-24', '2032-06-12', '2033-06-01',
+      '2034-06-20', '2035-06-10', '2036-05-30', '2037-06-18', '2038-06-07', '2039-05-27', '2040-06-14'],
+    qixi: ['2026-08-19', '2027-08-08', '2028-08-26', '2029-08-16', '2030-08-05', '2031-08-24', '2032-08-12',
+      '2033-08-01', '2034-08-20', '2035-08-10', '2036-08-28', '2037-08-17', '2038-08-07', '2039-08-26', '2040-08-14'],
+    ghost: ['2026-08-27', '2027-08-16', '2028-09-03', '2029-08-24', '2030-08-13', '2031-09-01', '2032-08-20',
+      '2033-08-09', '2034-08-28', '2035-08-18', '2036-09-05', '2037-08-25', '2038-08-15', '2039-09-03', '2040-08-22'],
+    midautumn: ['2026-09-25', '2027-09-15', '2028-10-03', '2029-09-22', '2030-09-12', '2031-10-01', '2032-09-19',
+      '2033-09-08', '2034-09-27', '2035-09-16', '2036-10-04', '2037-09-24', '2038-09-13', '2039-10-02', '2040-09-20'],
+    chongyang: ['2026-10-18', '2027-10-08', '2028-10-26', '2029-10-16', '2030-10-05', '2031-10-24', '2032-10-12',
+      '2033-10-01', '2034-10-20', '2035-10-09', '2036-10-27', '2037-10-17', '2038-10-07', '2039-10-26', '2040-10-14'],
+    laba: ['2027-01-15', '2028-01-04', '2029-01-22', '2030-01-11', '2031-01-01', '2032-01-20', '2033-01-08',
+      '2034-01-27', '2035-01-16', '2036-01-05', '2037-01-23', '2038-01-12', '2039-01-02', '2040-01-21'],
   };
   const dayMs = 86400000;
   const near = (key, before, after, d) => LUNAR[key].some((s) => {

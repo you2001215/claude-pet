@@ -227,6 +227,7 @@
     showSticker(null);
     clearInterval(typing);
     bubbleText.textContent = '';
+    bubbleText.style.display = '';       // a sticker-only reply hid it
     bubbleEl.classList.remove('hidden');
     let i = 0;
     const chars = Array.from(text);
@@ -589,6 +590,8 @@
     if (talking && bubbleHideAt) bubbleHideAt = Math.max(bubbleHideAt, t + 1.2);
     if (bubbleHideAt && t > bubbleHideAt) hideBubble();
 
+    // the ground moved up under her (taller taskbar, new scaling, another monitor): stand on it again, whatever she is doing
+    if (!dragging && pos.y > groundY() + 1) { pos.y = groundY(); if (vel.y > 0) vel.y = 0; }
     const onGround = pos.y >= groundY() - 0.5;
 
     switch (state) {
@@ -895,12 +898,11 @@
     say(pick(L.drag), 2200);
   }
 
-  function endPress(e) {
+  async function endPress(e) {
     if (!pressed) return;
     const wasDrag = dragging;
     pressed = null;
     if (wasDrag) {
-      dragging = false;
       const t = now();
       const recent = dragSamples.filter((s) => t - s.t < 0.09);
       let vx = 0, vy = 0;
@@ -909,12 +911,16 @@
         const dtt = Math.max(0.016, b.t - a.t);
         vx = (b.x - a.x) / dtt; vy = (b.y - a.y) / dtt;
       }
+      // the work area of the screen she was dropped on first, or the first fall frame would clamp her to the old
+      // one; dragging stays on meanwhile so nothing moves her
+      await Promise.race([syncBounds(false).catch(() => {}), new Promise((r) => setTimeout(r, 400))]);
+      if (pressed) return;                 // picked up again meanwhile: that drag goes on
+      dragging = false;
       vel.x = clamp(vx, -2200, 2200);
       vel.y = clamp(vy, -1600, 1600);
       fallFlip = vel.x > 150 ? -1 : 1;
       update._saidLand = false;
       setState('fall');
-      syncBounds(false).catch(() => {});
     } else if (e && e.button === 0) {
       onClick();
     }
@@ -951,7 +957,10 @@
     }
     else if (c === 'sleep') { interact(); goSleep(); }
     else if (c === 'wake') wake();
-    else if (c === 'dropped') { syncBounds(true).then(() => { update._saidLand = false; setState('fall'); }); }
+    else if (c === 'dropped') {
+      // 回到屏幕中间: she falls from the middle, so she is not asleep any more (or she would land as a sprite that never wakes)
+      syncBounds(true).then(() => { sleeping = false; P.sleepState(false); update._saidLand = false; setState('fall'); });
+    }
     else if (c === 'display-changed') syncBounds(true);
   });
   P.onAi((ev) => {
@@ -1007,7 +1016,7 @@
       if (!maid && CCM && CCM.look && !['drag', 'fall'].includes(state)) playClaudeAct(CCM.look);
       else if (state !== 'drag') setState('think', 1e9);
       aiStreaming = true;
-      sayLive('让我看看你在看什么…', 30);
+      sayLive(ev.auto ? '让我偷偷瞄一眼你的屏幕…' : '让我看看你在看什么…', 30);   // an automatic look is announced first
     } else if (ev.type === 'reminder') {
       if (sleeping) { sleeping = false; P.sleepState(false); }
       if (!['drag', 'fall'].includes(state)) {
@@ -1025,6 +1034,8 @@
     } else if (ev.type === 'error') {
       aiStreaming = false; lookingScreen = false;
       if (state === 'think') setState('idle', rand(3, 5));
+      // an automatic look that failed (vision model refuses images, capture failed): end the pose quietly
+      if (ev.auto) { say('算了，不偷看了～', 2600); return; }
       if (maid && CM && !['drag', 'fall', 'sleep'].includes(state)) setAct('act', CM.error);
       say(ev.code === 'nokey' ? '还没给我设置 API Key 呢…右键选「AI 设置」' : ev.code === 'look' ? '呜…没看清你的屏幕' : '呜…刚刚没接上话');
     }

@@ -88,6 +88,13 @@
       if (r.remindSet && r.remindSet.length) notes.push('⏰ 已设提醒：' + r.remindSet.join('；'));
       if (r.remindCancelled && r.remindCancelled.length) notes.push('已取消提醒：' + r.remindCancelled.join('；'));
       if (r.remindFail && r.remindFail.length) notes.push('提醒没设成功：' + r.remindFail.join('；'));
+      const dr = r.dropped || {};
+      if (r.memoryFull) notes.push('记忆本满了，去「AI 设置」里删掉一些旧的，她才能记新的');
+      if (dr.reminders > 0 || dr.cancels > 0) notes.push('一次最多设 3 个提醒、取消 3 个');
+      // she wanted to cancel a reminder although you didn't ask for that, so nothing was cancelled
+      if (dr.refused > 0) notes.push('她想取消提醒，但你没说要取消，所以没动');
+      if (dr.memories > 0) notes.push('有几条太长或太多的记忆没存');
+      if (r.truncated) notes.push('网络断了一下，后面的话没说完');
       for (const n of notes) {
         const s = document.createElement('span'); s.className = 'mem';
         s.textContent = '（' + n + '）';
@@ -109,37 +116,42 @@
   // ---------- voice input ----------
   const micBtn = document.getElementById('mic');
   const micTime = document.getElementById('micTime');
-  let micBusy = false;
+  let micBusy = false, micStarting = false;   // micStarting: a start is between its first await and the mic opening
   function micIdle() { micBtn.classList.remove('rec', 'busy'); micTime.textContent = ''; micBtn.style.removeProperty('--lvl'); }
   async function micStart() {
-    if (busy || micBusy || Mic.recording) return;
-    if (!(await U.micAccess())) { add('error', '没有麦克风权限。Mac：系统设置 → 隐私与安全性 → 麦克风 里允许 ClaudePet。'); return; }
-    const vs = await U.voiceGet();
-    if (!vs.models.asr.installed) {
-      const el = add('hint', '语音输入要先下载识别模型（约 230 MB，只需一次）。');
-      const go = document.createElement('a'); go.href = '#'; go.textContent = ' 去设置里下载';
-      go.addEventListener('click', (e) => { e.preventDefault(); U.openSettings(); });
-      el.appendChild(go);
-      return;
-    }
-    U.voiceStop();
-    U.voiceWarm('asr');
+    if (busy || micBusy || micStarting || Mic.recording) return;
+    micStarting = true;        // before the first await: a second quick click finds it set
     try {
-      await Mic.start({
-        onLevel: (lv, sec) => { micBtn.style.setProperty('--lvl', lv.toFixed(2)); micTime.textContent = Math.floor(sec) + 's'; },
-        onAutoStop: () => micStop(),
-      });
-    } catch (e) {
-      micIdle();
-      const why = e && e.name === 'NotAllowedError' ? '麦克风被系统拒绝了（Windows：设置 → 隐私和安全性 → 麦克风，打开「允许桌面应用访问麦克风」）'
-        : e && e.name === 'NotFoundError' ? '没找到麦克风' : '打不开麦克风：' + ((e && e.message) || e);
-      add('error', why);
-      return;
-    }
-    micBtn.classList.add('rec');
-    micTime.textContent = '0s';
-    status.textContent = '在听你说…（再按一次麦克风结束）';
-    input.placeholder = '正在听…再按一次结束';
+      if (!(await U.micAccess())) { add('error', '没有麦克风权限。Mac：系统设置 → 隐私与安全性 → 麦克风 里允许 ClaudePet。'); return; }
+      const vs = await U.voiceGet();
+      if (!vs.models.asr.installed) {
+        const el = add('hint', '语音输入要先下载识别模型（约 230 MB，只需一次）。');
+        const go = document.createElement('a'); go.href = '#'; go.textContent = ' 去设置里下载';
+        go.addEventListener('click', (e) => { e.preventDefault(); U.openSettings(); });
+        el.appendChild(go);
+        return;
+      }
+      U.voiceStop();
+      U.voiceWarm('asr');
+      let started;
+      try {
+        started = await Mic.start({
+          onLevel: (lv, sec) => { micBtn.style.setProperty('--lvl', lv.toFixed(2)); micTime.textContent = Math.floor(sec) + 's'; },
+          onAutoStop: () => micStop(),
+        });
+      } catch (e) {
+        micIdle();
+        const why = e && e.name === 'NotAllowedError' ? '麦克风被系统拒绝了（Windows：设置 → 隐私和安全性 → 麦克风，打开「允许桌面应用访问麦克风」）'
+          : e && e.name === 'NotFoundError' ? '没找到麦克风' : '打不开麦克风：' + ((e && e.message) || e);
+        add('error', why);
+        return;
+      }
+      if (!started) { micIdle(); return; }   // cancelled while the mic was opening
+      micBtn.classList.add('rec');
+      micTime.textContent = '0s';
+      status.textContent = '在听你说…（再按一次麦克风结束）';
+      input.placeholder = '正在听…再按一次结束';
+    } finally { micStarting = false; }
   }
   async function micStop() {
     if (!Mic.recording) return;
@@ -159,7 +171,7 @@
   }
   micBtn.addEventListener('click', () => { if (Mic.recording) micStop(); else micStart(); });
   U.onStartMic(() => { if (!Mic.recording) micStart(); });
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && Mic.recording) { Mic.cancel(); micIdle(); status.textContent = '在你桌面上待着'; } });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (Mic.recording || Mic.starting)) { Mic.cancel(); micIdle(); status.textContent = '在你桌面上待着'; } });
 
   const outfitTag = (k) => { document.getElementById('outfitTag').textContent = k === 'maid' ? '（今天穿女仆装）' : '（今天 cos Claude）'; };
   U.outfit().then(outfitTag);

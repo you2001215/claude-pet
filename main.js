@@ -1,13 +1,19 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, protocol, net, powerMonitor, shell, Notification, desktopCapturer, systemPreferences, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, protocol, net, powerMonitor, shell, Notification, desktopCapturer, systemPreferences, dialog, session } = require('electron');
+// an installed copy ignores the hooks that load a test script or point Edge voice / stickers at another server
+// (read when the modules below load, so this has to come first)
+if (app.isPackaged) for (const k of ['PET_TEST', 'PET_EDGE_WSS', 'PET_STICKER_SITE']) delete process.env[k];
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { pathToFileURL } = require('url');
 const ai = require('./ai');
 const stickers = require('./stickers');
 const reminders = require('./reminders');
+const store = require('./store');
 const voice = require('./voice');
+const voiceHost = require('./voice/engine-host');
 
 // serve the UI from app://pet/... so canvas pixels stay same-origin (needed for click-through hit tests)
 protocol.registerSchemesAsPrivileged([
@@ -17,6 +23,7 @@ const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif',
   '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.wav': 'audio/wav', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8',
 };
 // video clips need byte ranges so the player can seek and loop
 const mediaCache = new Map();
@@ -51,7 +58,7 @@ function registerAppProtocol() {
       }
     }
     const p = path.normalize(path.join(root, decodeURIComponent(u.pathname)));
-    if (!p.startsWith(root)) return new Response('forbidden', { status: 403 });
+    if (p !== root && !p.startsWith(root + path.sep)) return new Response('forbidden', { status: 403 });
     if (/\.webm$/i.test(p)) return serveMedia(p, req);
     // read through fs (asar-aware) rather than a file:// fetch, which fails on non-ASCII names inside app.asar
     try {
@@ -76,6 +83,18 @@ function logError(where, e) {
 process.on('uncaughtException', (e) => logError('uncaught', e));
 process.on('unhandledRejection', (e) => logError('unhandledRejection', e));
 
+// ---------- IPC only from our own pages ----------
+const ipcWarned = new Set();
+function fromApp(e, ch) {
+  let url = '';
+  try { url = String((e && e.senderFrame && e.senderFrame.url) || ''); } catch (_) {}
+  if (url.startsWith('app://pet/')) return true;
+  if (!ipcWarned.has(ch)) { ipcWarned.add(ch); logError('ipc', `ignored ${ch} from ${url.slice(0, 120) || 'an unknown frame'}`); }
+  return false;
+}
+const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => (fromApp(e, ch) ? fn(e, ...a) : undefined));
+const on = (ch, fn) => ipcMain.on(ch, (e, ...a) => { if (fromApp(e, ch)) fn(e, ...a); });
+
 const isMac = process.platform === 'darwin';
 const isWin = process.platform === 'win32';
 // Windows with a virtual display driver (ToDesk, remote desktop, emulators...) crashes Chromium's
@@ -83,9 +102,9 @@ const isWin = process.platform === 'win32';
 // (fix found in github.com/PC2005-cloud/dsh-pet)
 if (isWin && process.env.PET_GPU_SANDBOX !== '1') app.commandLine.appendSwitch('disable-gpu-sandbox');
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-}
+// a second copy only pokes the running one (second-instance below): no window, no tray, no data writes
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
 
 // ---------- settings ----------
 const SIZES = { small: 150, medium: 200, large: 260, huge: 340 };
@@ -97,17 +116,23 @@ let settings = { ...defaults };
 
 function loadSettings() {
   settingsPath = path.join(app.getPath('userData'), 'settings.json');
-  try {
-    settings = { ...defaults, ...JSON.parse(fs.readFileSync(settingsPath, 'utf8')) };
-  } catch (_) { settings = { ...defaults }; }
+  // tmp + rename with a .bak, like the AI files: it is rewritten after every drag, so a power cut can hit it
+  const r = store.readJsonSync(settingsPath, null);
+  const raw = r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : {};
+  settings = { ...defaults, ...raw };
+  const w = store.loadWarning(r, '桌宠设置文件（settings.json）', '大小、位置和造型回到了默认');
+  if (w) logError('settings', w);
   if (!SIZES[settings.size]) settings.size = 'medium';
   if (!OUTFITS[settings.outfit]) settings.outfit = 'claude';
 }
-let saveTimer = null;
+let saveTimer = null, settingsSaveWarned = false;
 function saveSettings() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 1)); } catch (_) {}
+    try { store.writeJsonSync(settingsPath, settings); settingsSaveWarned = false; } catch (e) {
+      if (!settingsSaveWarned) logError('settings', '保存 settings.json 失败：' + e.message);   // once, it is saved after every drag
+      settingsSaveWarned = true;
+    }
   }, 400);
 }
 
@@ -174,6 +199,23 @@ function createWindow() {
   win.loadURL('app://pet/renderer/index.html');
   win.once('ready-to-show', () => win.showInactive());
   win.on('closed', () => { win = null; });
+  reloadOnCrash(win, 'pet', 1000);
+  win.on('unresponsive', () => logError('pet', 'window unresponsive'));
+  win.on('responsive', () => logError('pet', 'window responsive again'));
+}
+
+// a crashed page comes back by itself instead of leaving an invisible window; at most 5 times in 10 minutes
+function reloadOnCrash(w, name, delay) {
+  const times = [];
+  w.webContents.on('render-process-gone', (_e, d) => {
+    if (d.reason === 'clean-exit') return;
+    logError(name, `page process gone: ${d.reason} (${d.exitCode})`);
+    const t = Date.now();
+    while (times.length && t - times[0] > 10 * 60000) times.shift();
+    if (times.length >= 5) { logError(name, 'crashed 5 times in 10 minutes, not reloading'); return; }
+    times.push(t);
+    setTimeout(() => { if (!w.isDestroyed()) w.webContents.reload(); }, delay);
+  });
 }
 
 function applyOnTop() {
@@ -214,9 +256,13 @@ function buildMenu() {
     { label: '大小', submenu: sizeItems },
     { label: '换装', submenu: Object.entries(OUTFITS).map(([k, label]) => ({ label, type: 'radio', checked: settings.outfit === k, click: () => setOutfit(k) })) },
     { label: '始终在最前面', type: 'checkbox', checked: settings.alwaysOnTop, click: (i) => { settings.alwaysOnTop = i.checked; applyOnTop(); saveSettings(); } },
-    { label: '开机自动启动', type: 'checkbox', checked: loginOn, click: (i) => app.setLoginItemSettings({ openAtLogin: i.checked }) },
+    // a dev run (npm start) would point autostart at the dev Electron instead of the installed app
+    app.isPackaged
+      ? { label: '开机自动启动', type: 'checkbox', checked: loginOn, click: (i) => app.setLoginItemSettings({ openAtLogin: i.checked }) }
+      : { label: '开机自动启动（开发版不能设）', type: 'checkbox', checked: loginOn, enabled: false },
     { label: '回到屏幕中间', click: () => resetPosition() },
     { label: 'AI 设置…', click: () => openSettings() },
+    { label: '导出诊断信息…', click: () => exportFromMenu() },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
   ]);
@@ -302,6 +348,7 @@ function uiWindow(file, opts) {
     ...opts,
   });
   if (!isMac) w.setMenu(null);
+  reloadOnCrash(w, file, 500);
   w.loadURL('app://pet/renderer/' + file);
   w.once('ready-to-show', () => { w.show(); w.focus(); if (isMac) app.focus({ steal: true }); });
   return w;
@@ -332,7 +379,7 @@ function openSettings() {
   settingsWin.on('closed', () => { settingsWin = null; if (chatWin) chatWin.webContents.send('ai:settings-changed'); });
 }
 
-ipcMain.handle('ai:send', async (_e, text, withScreen) => {
+handle('ai:send', async (_e, text, withScreen) => {
   pro.lastUserChat = Date.now();
   send('ai', { type: 'thinking' });
   try {
@@ -345,26 +392,30 @@ ipcMain.handle('ai:send', async (_e, text, withScreen) => {
       send('ai', { type: 'delta', text: t });
     }, { image });
     const remindSet = [], remindFail = [], remindCancelled = [];
+    // cancel first: "move my 3 pm meeting to 4" is a cancel plus an add with the same words, and the new one must survive
+    for (const k of r.remindCancel || []) remindCancelled.push(...reminders.cancel(k));
     for (const x of r.remindAdd || []) {
       const res = reminders.add(x.at, x.text);
       if (res.ok) remindSet.push(res.label); else remindFail.push(res.error);
     }
-    for (const k of r.remindCancel || []) remindCancelled.push(...reminders.cancel(k));
     if (remindSet.length || remindCancelled.length) refreshTray();
     send('ai', { type: 'done', text: r.reply, remembered: r.remembered, stickers: r.stickers, remindSet });
     pro.lastUserChat = Date.now();
-    return { ok: true, reply: r.reply, remembered: r.remembered, stickers: r.stickers, remindSet, remindFail, remindCancelled };
+    return {
+      ok: true, reply: r.reply, remembered: r.remembered, stickers: r.stickers, remindSet, remindFail, remindCancelled,
+      memoryFull: !!r.memoryFull, dropped: r.dropped || { memories: 0, reminders: 0, cancels: 0, refused: 0 }, truncated: !!r.truncated,
+    };
   } catch (e) {
     send('ai', { type: 'error', code: e.code || '', text: e.message });
     return { ok: false, error: e.message, code: e.code || '' };
   }
 });
-ipcMain.on('ai:stop', () => ai.abort());
-ipcMain.handle('ai:history', () => ai.history());
-ipcMain.handle('ai:sticker-credit', () => stickers.attribution());
-ipcMain.handle('stickers:test', () => stickers.selfTest());
-ipcMain.handle('reminders:list', () => reminders.pending());
-ipcMain.handle('ai:balance', async () => {
+on('ai:stop', () => ai.abort());
+handle('ai:history', () => ai.history());
+handle('ai:sticker-credit', () => stickers.attribution());
+handle('stickers:test', () => stickers.selfTest());
+handle('reminders:list', () => reminders.pending());
+handle('ai:balance', async () => {
   const b = await ai.balance();
   if (b.ok) send('ai', { type: 'notice', text: b.summary, tier: balanceTier(b) });
   return b;
@@ -379,37 +430,39 @@ function balanceTier(b) {
   const used = Math.max(0, Math.min(100, (20 - cny) / 20 * 100));
   return Math.min(4, Math.floor(used / 20));
 }
-ipcMain.handle('reminders:delete', (_e, id) => { const ok = reminders.remove(id); refreshTray(); return ok; });
-ipcMain.handle('stickers:status', () => stickers.status());
-ipcMain.handle('ai:clear', async () => { await ai.clearHistory(); return true; });
-ipcMain.handle('ai:settings:get', () => ai.publicSettings());
-ipcMain.handle('ai:settings:set', async (_e, s) => { const r = await ai.updateSettings(s || {}); planNextChat(); planNextLook(); pushSettings(); return r; });
-ipcMain.handle('ai:pick-folder', async () => {
+handle('reminders:delete', (_e, id) => { const ok = reminders.remove(id); refreshTray(); return ok; });
+handle('stickers:status', () => stickers.status());
+handle('ai:clear', async () => { await ai.clearHistory(); return true; });
+handle('ai:settings:get', () => ai.publicSettings());
+handle('ai:settings:set', async (_e, s) => { const r = await ai.updateSettings(s || {}); planNextChat(); planNextLook(); pushSettings(); return r; });
+handle('ai:pick-folder', async () => {
   const r = await dialog.showOpenDialog(settingsWin || undefined, { title: '选择存放人格和记忆的文件夹', properties: ['openDirectory', 'createDirectory'] });
   return r.canceled ? '' : r.filePaths[0] || '';
 });
-ipcMain.handle('ai:import-dsh', () => { try { return ai.importFromDsh(); } catch (e) { return { ok: false, error: e.message }; } });
-ipcMain.handle('ai:test', () => ai.test());
-ipcMain.handle('ai:models', () => ai.listModels());
-ipcMain.on('ui:open-settings', () => openSettings());
-ipcMain.on('ui:open-chat', () => openChat());
-ipcMain.handle('voice:mic-access', async () => {
+handle('ai:import-dsh', () => { try { return ai.importFromDsh(); } catch (e) { return { ok: false, error: e.message }; } });
+handle('ai:test', () => ai.test());
+handle('ai:models', () => ai.listModels());
+on('ui:open-settings', () => openSettings());
+on('ui:open-chat', () => openChat());
+handle('voice:mic-access', async () => {
   if (!isMac) return true;
   try {
     if (systemPreferences.getMediaAccessStatus('microphone') === 'granted') return true;
     return await systemPreferences.askForMediaAccess('microphone');
   } catch (_) { return false; }
 });
-ipcMain.on('ui:close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
-ipcMain.on('ui:open-url', (_e, url) => {
+on('ui:close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
+on('ui:open-url', (_e, url) => {
   try {
-    const h = new URL(url).hostname;
-    if (['kiriyuki.com', 'space.bilibili.com', 'github.com', 'creativecommons.org', 'platform.deepseek.com', 'api-docs.deepseek.com', 'www.bilibili.com'].includes(h)) shell.openExternal(url);
+    const u = new URL(String(url));
+    if (u.protocol === 'https:' && ['kiriyuki.com', 'space.bilibili.com', 'github.com', 'creativecommons.org', 'platform.deepseek.com', 'api-docs.deepseek.com', 'www.bilibili.com'].includes(u.hostname)) shell.openExternal(u.href);
   } catch (_) {}
 });
-ipcMain.handle('ai:will-greet', () => ai.hasKey() && ai.proactiveMode() !== 'off');
+// the AI hello is said once per start; a page reloaded after a crash gets the built-in greeting instead
+let greeted = false;
+handle('ai:will-greet', () => !greeted && ai.hasKey() && ai.proactiveMode() !== 'off');
 let startMeet = Promise.resolve(null);
-ipcMain.on('ai:greet', async () => { speakUp('startup', { meet: await startMeet }); });
+on('ai:greet', async () => { if (greeted) return; greeted = true; speakUp('startup', { meet: await startMeet }); });
 
 // ---------- proactive talk: she starts a conversation by herself ----------
 const pro = {
@@ -425,22 +478,25 @@ async function speakUp(kind, ctx) {
   if (pro.busy || !ai.hasKey() || ai.proactiveMode() === 'off') return false;
   pro.busy = true;
   pro.lastSaid = Date.now();
-  planNextChat();
+  // only small talk sets the next small talk; a greeting, a rest or night nudge just keeps it 15+ minutes away
+  if (kind === 'chat') planNextChat();
+  else pro.nextChatAt = Math.max(pro.nextChatAt, Date.now() + 15 * 60000);
   try {
     const r = await ai.proactive(kind, ctx);
     send('ai', { type: 'proactive', kind, text: r.text, stickers: r.stickers });
     if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', r);
     return true;
   } catch (e) {
+    logError('proactive:' + kind, e);
     send('ai', { type: 'proactive-failed', kind });
     return false;
   } finally { pro.busy = false; }
 }
 // ---------- looking at the screen ----------
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
-// capture the display the cursor is on; our own windows are hidden from the capture
-async function captureScreen() {
-  const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+// capture one display (by default the one the cursor is on); our own windows are hidden from the capture
+async function captureScreen(display) {
+  const d = display || screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const pw = Math.round(d.size.width * d.scaleFactor), ph = Math.round(d.size.height * d.scaleFactor);
   const k = Math.min(1, 1600 / pw);
   const mine = [win, chatWin, settingsWin].filter((w) => w && !w.isDestroyed());
@@ -456,43 +512,105 @@ async function captureScreen() {
   }
 }
 
-// name of the app in front (used so she only glances while you are in a browser)
+// the app in front (so she only glances while you are in a browser): { name, rect }, rect = the front window in
+// physical pixels on Windows (to capture the screen the browser is on), null elsewhere
+// Windows PowerShell 5.1 writes in the console code page (CP936 on Chinese Windows) and wraps errors in CLIXML, so
+// the script catches its own errors and prints everything as ASCII (\uXXXX escapes): 'name|l|t|r|b' or 'ERR|reason'
+const FRONT_PS = [
+  "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop';",
+  "function A([string]$s) { -join ($s.ToCharArray() | % { if ([int]$_ -lt 128) { [string]$_ } else { '\\u{0:x4}' -f [int]$_ } }) };",
+  'try {',
+  'Add-Type -Namespace W -Name U -MemberDefinition \'',
+  '[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();',
+  '[DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(System.IntPtr h, out int p);',
+  '[DllImport("user32.dll")] public static extern System.IntPtr SetThreadDpiAwarenessContext(System.IntPtr c);',
+  '[DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr h, out RECT r);',
+  'public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }\';',
+  // per-monitor aware v2, so the rectangle is in real pixels on scaled displays (missing before Windows 10 1607)
+  'try { [void][W.U]::SetThreadDpiAwarenessContext([System.IntPtr](-4)) } catch {};',
+  '$h=[W.U]::GetForegroundWindow(); $p=0; [void][W.U]::GetWindowThreadProcessId($h, [ref]$p);',
+  '$r=New-Object "W.U+RECT"; [void][W.U]::GetWindowRect($h, [ref]$r);',
+  'A ((Get-Process -Id $p).ProcessName + "|" + $r.Left + "|" + $r.Top + "|" + $r.Right + "|" + $r.Bottom)',
+  "} catch { 'ERR|' + (A $_.Exception.Message) }",
+].join(' ');
+// each different PowerShell problem goes to error.log once (a few at most), so a real-machine check can read it
+const psWarned = new Set();
+function warnPs(msg) {
+  if (psWarned.has(msg) || psWarned.size >= 3) return;
+  psWarned.add(msg);
+  logError('front-app', msg + '（同样的只记一次）');
+}
+const unescPs = (s) => String(s).replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+// stderr of a failed run: CLIXML records and XML escapes are noise
+const psStderr = (s) => String(s || '').replace(/#< CLIXML/g, ' ').replace(/_x000[DA]_/g, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+function parseFront(out) {
+  const [name = '', ...nums] = String(out || '').trim().split('|');
+  const [l, t, r, b] = nums.map(Number);
+  const rect = nums.length === 4 && [l, t, r, b].every(Number.isFinite) && r > l && b > t ? { x: l, y: t, width: r - l, height: b - t } : null;
+  return { name: name.trim(), rect };
+}
 function frontApp() {
   return new Promise((resolve) => {
     if (isWin) {
-      const ps = 'Add-Type -Namespace W -Name U -MemberDefinition \'[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(System.IntPtr h, out int p);\'; $p=0; [void][W.U]::GetWindowThreadProcessId([W.U]::GetForegroundWindow(), [ref]$p); (Get-Process -Id $p).ProcessName';
       // -EncodedCommand avoids Windows command-line quoting problems with the C# snippet
-      const enc = Buffer.from(ps, 'utf16le').toString('base64');
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc], { windowsHide: true, timeout: 10000 }, (err, out) => resolve(err ? '' : String(out).trim()));
+      const enc = Buffer.from(FRONT_PS, 'utf16le').toString('base64');
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', enc], { windowsHide: true, timeout: 10000 }, (err, out, errOut) => {
+        // not err.message: it starts with the whole command line, i.e. the long base64 blob
+        if (err) { warnPs(`PowerShell 没跑成：code=${err.code} killed=${err.killed} signal=${err.signal} ${psStderr(errOut)}`); return resolve({ name: '', rect: null }); }
+        const line = String(out || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean).pop() || '';
+        if (line.startsWith('ERR|')) { warnPs('PowerShell 报错：' + unescPs(line.slice(4)).replace(/\s+/g, ' ').slice(0, 300)); return resolve({ name: '', rect: null }); }
+        resolve(parseFront(unescPs(line)));
+      });
     } else if (isMac) {
       execFile('/bin/sh', ['-c', 'lsappinfo info -only name "$(lsappinfo front)"'], { timeout: 5000 }, (err, out) => {
         const m = String(out || '').match(/=\s*"([^"]+)"/);
-        resolve(err ? '' : (m ? m[1] : String(out || '').trim()));
+        resolve({ name: err ? '' : (m ? m[1] : String(out || '').trim()), rect: null });
       });
-    } else resolve('');
+    } else resolve({ name: '', rect: null });
   });
 }
-const BROWSER_RE = /chrome|msedge|edge|firefox|brave|opera|vivaldi|safari|arc|360se|360chrome|qqbrowser|sogou|maxthon|yandex|chromium|zen|whale|liebao|2345/i;
+// matched at the start of a word, so "SearchApp" is not Arc and "citizen" is not Zen
+const BROWSER_RE = /(?:^|[^a-z0-9])(?:chrome|msedge|edge|firefox|brave|opera|vivaldi|safari|arc|360se|360chrome|qqbrowser|sogou|maxthon|yandex|chromium|zen|whale|liebao|2345)/i;
+const isBrowser = (front) => BROWSER_RE.test((front && front.name) || '');
 
-async function lookAndComment(kind) {
+// the display the front window is on (Windows), otherwise the cursor's
+function displayFor(front) {
+  try {
+    if (isWin && front && front.rect) return screen.getDisplayMatching(screen.screenToDipRect(null, front.rect));
+  } catch (e) { logError('look-display', e); }
+  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+}
+
+async function lookAndComment(kind, front) {
   if (!ai.hasKey()) { send('ai', { type: 'error', code: 'nokey', text: '' }); return false; }
   if (pro.busy) return false;
   pro.busy = true;
-  if (kind === 'lookAsk') send('ai', { type: 'looking' });
+  const auto = kind !== 'lookAsk';
+  // an automatic look is announced first and given a moment, so it never happens behind your back
+  send('ai', auto ? { type: 'looking', auto: true } : { type: 'looking' });
   try {
-    const image = await captureScreen();
+    if (auto) {
+      await sleepMs(1500);
+      if (ai.busy()) return false;              // you started chatting meanwhile: that reply takes over the bubble
+    }
+    const image = await captureScreen(auto ? displayFor(front) : null);
     const r = await ai.proactive(kind, { image });
     send('ai', { type: 'proactive', kind, text: r.text, stickers: r.stickers });
     if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', r);
     pro.lastSaid = Date.now();
+    if (auto) lookFails = 0;
     return true;
   } catch (e) {
     logError('look', e);
-    if (kind === 'lookAsk') send('ai', { type: 'error', code: 'look', text: e.message });
+    // she already said she was looking, so even an automatic look has to end the "looking" pose (pet.js keeps it soft)
+    send('ai', { type: 'error', code: 'look', text: e.message, auto });
+    // a vision model or endpoint that keeps refusing images: wait 2 h, then 4, 8... (up to a day) instead of every round
+    if (auto) { lookFails++; planNextLook(Math.min(120 * 2 ** (lookFails - 1), 24 * 60)); }
     return false;
   } finally { pro.busy = false; }
 }
-ipcMain.on('ai:look', () => { lookAndComment('lookAsk'); });
+let lookFails = 0;
+on('ai:look', () => { lookAndComment('lookAsk'); });
 
 const LOOK_GAP = { sometimes: [30, 50], often: [10, 18] };
 let nextLookAt = Date.now() + 10 * 60000;
@@ -500,18 +618,30 @@ function planNextLook(min) {
   const g = LOOK_GAP[ai.lookMode()];
   nextLookAt = Date.now() + (min != null ? min : g ? g[0] + Math.random() * (g[1] - g[0]) : 60) * 60000;
 }
-let lookChecking = false;
+// macOS: without the screen-recording permission an automatic look would only bring up the system prompt
+function mayCaptureScreen() {
+  if (!isMac) return true;
+  try { return systemPreferences.getMediaAccessStatus('screen') === 'granted'; } catch (_) { return false; }
+}
+let lookChecking = false, macLookTold = false, lastFront = null;
 async function lookTick() {
   if (lookChecking || !ai.hasKey() || ai.lookMode() === 'off' || Date.now() < nextLookAt) return;
   if (powerMonitor.getSystemIdleTime() > 120 || sleeping || pro.busy) return;
   const chatting = Date.now() - pro.lastUserChat < 5 * 60000 || ai.busy() || (chatWin && !chatWin.isDestroyed() && chatWin.isFocused());
   if (chatting || Date.now() - pro.lastSaid < 8 * 60000) return;
+  if (!mayCaptureScreen()) {
+    // macOS only lists ClaudePet under screen recording after one manual look has asked; say so once per run
+    if (!macLookTold) { macLookTold = true; send('ai', { type: 'notice', text: '想让我自动看屏幕的话，Mac 要先允许录屏：右键点一次「看看我在看什么」，在系统弹窗里允许，再重启我' }); }
+    planNextLook(60); return;
+  }
   lookChecking = true;
   try {
-    const name = await frontApp();
-    if (!BROWSER_RE.test(name)) { planNextLook(3); return; }   // not in a browser: check again in a few minutes
+    const front = await frontApp();
+    // kept for the diagnostics report: at export time the window in front is the pet's own
+    lastFront = { name: front.name, rect: front.rect, browser: isBrowser(front), display: isWin ? (() => { try { return displayFor(front).id; } catch (_) { return null; } })() : null, at: Date.now() };
+    if (!isBrowser(front)) { planNextLook(5); return; }   // not in a browser: check again in a few minutes
     planNextLook();
-    await lookAndComment('look');
+    await lookAndComment('look', front);
   } finally { lookChecking = false; }
 }
 
@@ -529,7 +659,7 @@ async function checkReminders() {
 async function fireReminder(r) {
   let text = '', st = [];
   if (ai.hasKey()) {
-    try { const out = await ai.proactive('reminder', { text: r.text, lateMin: r.lateMin }); text = out.text; st = out.stickers; } catch (_) {}
+    try { const out = await ai.proactive('reminder', { text: r.text, lateMin: r.lateMin }); text = out.text; st = out.stickers; } catch (e) { logError('proactive:reminder', e); }
   }
   if (!text) text = `到点啦！${r.text}` + (r.lateMin > 2 ? `（刚才电脑没开，晚了 ${r.lateMin} 分钟）` : '');
   send('ai', { type: 'reminder', text, stickers: st, task: r.text });
@@ -572,7 +702,7 @@ function proactiveTick() {
 }
 
 // ---------- ipc ----------
-ipcMain.on('set-pos', (_e, x, y) => {
+on('set-pos', (_e, x, y) => {
   if (!win) return;
   const nx = px(x), ny = px(y);
   // never hand the OS a broken coordinate (NaN / absurd values): ignore it and let the renderer resync
@@ -585,38 +715,204 @@ ipcMain.on('set-pos', (_e, x, y) => {
   if (cx !== nx || cy !== ny) win.setPosition(nx, ny);
   settings.x = nx; settings.y = ny; saveSettings();
 });
-ipcMain.handle('get-bounds', () => {
+handle('get-bounds', () => {
   if (!win) return null;
   const b = win.getBounds();
   return { bounds: b, workArea: workAreaAt(b.x + b.width / 2, b.y + b.height - 10) };
 });
-ipcMain.handle('get-cursor', () => screen.getCursorScreenPoint());
-ipcMain.handle('get-settings', () => ({ size: settings.size, height: SIZES[settings.size], walk: settings.walk, outfit: settings.outfit, whisper: ai.whisperMode() }));
+handle('get-cursor', () => screen.getCursorScreenPoint());
+handle('get-settings', () => ({ size: settings.size, height: SIZES[settings.size], walk: settings.walk, outfit: settings.outfit, whisper: ai.whisperMode() }));
 // a line made up by the model for her muttering; skipped while you are away so it costs nothing
-ipcMain.handle('ai:whisper', async (_e, ctx) => {
+handle('ai:whisper', async (_e, ctx) => {
   if (powerMonitor.getSystemIdleTime() > 600) return { ok: false, reason: 'away' };
   return ai.whisper({ action: String((ctx && ctx.action) || '').slice(0, 40) });
 });
-ipcMain.handle('ui:outfit', () => settings.outfit);
-ipcMain.on('ui:set-outfit', (_e, k) => setOutfit(k));
-ipcMain.on('ignore-mouse', (_e, ignore) => {
+handle('ui:outfit', () => settings.outfit);
+on('ui:set-outfit', (_e, k) => setOutfit(k));
+on('ignore-mouse', (_e, ignore) => {
   if (!win) return;
   if (ignore) win.setIgnoreMouseEvents(true, { forward: true });
   else win.setIgnoreMouseEvents(false);
 });
-ipcMain.on('context-menu', () => {
+on('context-menu', () => {
   if (!win) return;
   buildMenu().popup({ window: win });
 });
-ipcMain.on('sleep-state', (_e, v) => { sleeping = !!v; refreshTray(); });
+on('sleep-state', (_e, v) => { sleeping = !!v; refreshTray(); });
+
+// ---------- diagnostics: a plain-text report to send along when something goes wrong ----------
+const stamp = (d = new Date()) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`; };
+const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function tailFile(f, n) {
+  try { return fs.readFileSync(f, 'utf8').split(/\r?\n/).filter(Boolean).slice(-n).join('\n') || '（空）'; } catch (_) { return '（没有这个文件）'; }
+}
+// the home folder and the account name become ~ (paths also show up JSON-escaped and with forward slashes);
+// anything shaped like an API key is masked in case an error message echoed one
+function scrub(text) {
+  const home = os.homedir();
+  let user = '';
+  try { user = os.userInfo().username || ''; } catch (_) {}
+  let t = String(text);
+  // the shared folder (it may be outside the home folder, e.g. D:\坚果云\...) and the saved key
+  if (typeof ai.redact === 'function') { try { t = ai.redact(t); } catch (_) {} }
+  // an older JSON.parse message quotes a piece of the file, which may be memory or chat text
+  t = t.replace(/(Unexpected token [^\n]*?), (?:\.\.\.)?"[\s\S]{0,400}?" is not valid JSON/g, '$1 …');
+  for (const h of [...new Set([home.replace(/\\/g, '\\\\'), home, home.replace(/\\/g, '/')])]) if (h && h.length > 1) t = t.replace(new RegExp(reEsc(h), 'gi'), '~');
+  // a very short ASCII name ("a", "pc") would eat ordinary words, so it is only replaced as a path segment
+  if (user) t = t.replace(new RegExp(user.length >= 3 || /[^\x00-\x7f]/.test(user) ? reEsc(user) : `(?<=[\\\\/])${reEsc(user)}(?![\\w.-])`, 'gi'), '~');
+  return t.replace(/\b(sk-)[A-Za-z0-9_-]{12,}/g, '$1***');
+}
+const when = (ms) => (Number.isFinite(ms) && ms > 0 ? new Date(ms).toLocaleString('zh-CN', { hour12: false }) : '不会');
+async function diagnosticsText() {
+  const L = [];
+  const sec = (title) => L.push('', `==== ${title} ====`);
+  const kv = (k, v) => L.push(`${k}：${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  const safe = (fn) => { try { return fn(); } catch (e) { return `（读取失败：${e.message}）`; } };
+  const block = (o) => { if (o && typeof o === 'object' && !Array.isArray(o)) for (const [k, v] of Object.entries(o)) kv(k, v); else kv('结果', o); };
+  L.push('ClaudePet 诊断信息', `生成时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+    '（这里面没有 API Key、人设、记忆和聊天内容；用户目录和用户名已经换成 ~）');
+
+  sec('程序');
+  kv('版本', app.getVersion());
+  kv('安装版', app.isPackaged ? '是' : '否（开发版，npm start）');
+  kv('Electron / Chrome / Node', `${process.versions.electron} / ${process.versions.chrome} / ${process.versions.node}`);
+  kv('系统', `${process.platform} ${process.arch}，内核 ${os.release()}${typeof os.version === 'function' ? `（${safe(() => os.version())}）` : ''}`);
+  kv('语言', `${app.getLocale()}${typeof app.getSystemLocale === 'function' ? ` / 系统 ${safe(() => app.getSystemLocale())}` : ''}`);
+  kv('已运行', `${Math.round(process.uptime() / 60)} 分钟`);
+  kv('数据目录', app.getPath('userData'));
+
+  sec('显示器');
+  const primaryId = safe(() => screen.getPrimaryDisplay().id);
+  for (const d of safe(() => screen.getAllDisplays()) || []) {
+    kv(`显示器 ${d.id}${d.id === primaryId ? '（主屏）' : ''}`, { bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor, rotation: d.rotation, internal: d.internal });
+  }
+  if (win && !win.isDestroyed()) kv('桌宠窗口', win.getBounds());
+
+  sec('显卡');
+  block(safe(() => app.getGPUFeatureStatus()));
+
+  sec('内存和 CPU');
+  const metrics = safe(() => app.getAppMetrics());
+  if (Array.isArray(metrics)) {
+    let total = 0;
+    for (const m of metrics) {
+      const mb = ((m.memory && m.memory.workingSetSize) || 0) / 1024;
+      total += mb;
+      const what = [m.serviceName, m.name].find((x) => x && x !== m.type) || '';
+      L.push(`${m.type}${what ? ' ' + what : ''}：内存 ${mb.toFixed(1)} MB，CPU ${((m.cpu && m.cpu.percentCPUUsage) || 0).toFixed(1)}%`);
+    }
+    kv('合计', `${metrics.length} 个进程，内存 ${total.toFixed(1)} MB`);
+  } else kv('进程', metrics);
+
+  sec('桌宠设置（settings.json）');
+  block(settings);
+  kv('开机自动启动', safe(() => app.getLoginItemSettings().openAtLogin));
+
+  sec('AI');
+  if (typeof ai.diagnostics === 'function') block(await Promise.resolve().then(() => ai.diagnostics()).catch((e) => `（读取失败：${e.message}）`));
+  else { kv('有 Key', ai.hasKey()); kv('主动搭话', ai.proactiveMode()); kv('看屏幕', ai.lookMode()); }
+  kv('下次闲聊', when(pro.nextChatAt));
+  kv('下次自动看屏幕', ai.lookMode() === 'off' ? '不会（关着）' : when(nextLookAt));
+
+  sec('语音');
+  block(safe(() => { const v = voice.publicSettings(); delete v.edgeVoices; return v; }));
+  const sherpa = safe(() => voiceHost.sherpaDir());
+  kv('离线语音运行库', fs.existsSync(path.join(sherpa, 'sherpa-onnx-node')) ? `有（${safe(() => fs.readdirSync(sherpa).join('、'))}）` : `没有（应该在 ${sherpa}）`);
+
+  sec('表情包');
+  block(safe(() => stickers.status()));
+
+  sec('提醒');
+  kv('待提醒', `${safe(() => reminders.pending().length)} 个`);
+  if (typeof reminders.warning === 'function' && reminders.warning()) kv('提醒文件', reminders.warning());
+
+  if (isWin || lastFront) {
+    sec('前台窗口（自动看屏幕用）');
+    if (lastFront) {
+      kv('上次自动看屏幕检查时', when(lastFront.at));
+      kv('　前台程序', lastFront.name || '（没取到，PowerShell 可能被拦了）');
+      kv('　窗口位置（物理像素）', lastFront.rect);
+      kv('　算作浏览器', lastFront.browser ? '是' : '否');
+      if (isWin) kv('　会截', `显示器 ${lastFront.display}`);
+    } else kv('上次自动看屏幕检查时', ai.lookMode() === 'off' ? '还没检查过（自动看屏幕关着）' : '这次启动后还没检查过');
+    if (isWin) {
+      // exporting from the settings page or the tray brings the pet's own window to the front
+      const f = await frontApp();
+      kv('导出时的前台窗口（一般是桌宠自己的窗口）', f.name || '（没取到，PowerShell 可能被拦了）');
+      kv('　窗口位置（物理像素）', f.rect);
+      kv('　所在', `显示器 ${safe(() => displayFor(f).id)}`);
+    }
+  }
+  if (isMac) {
+    sec('Mac 权限');
+    kv('录屏', safe(() => systemPreferences.getMediaAccessStatus('screen')));
+    kv('麦克风', safe(() => systemPreferences.getMediaAccessStatus('microphone')));
+  }
+
+  const ud = app.getPath('userData');
+  sec('错误日志（error.log 最后 300 行）');
+  L.push(tailFile(path.join(ud, 'error.log'), 300));
+  sec('表情包错误日志（stickers/error.log 最后 300 行）');
+  L.push(tailFile(path.join(ud, 'stickers', 'error.log'), 300));
+  return scrub(L.join('\n') + '\n');
+}
+async function exportDiagnostics(parent) {
+  try {
+    let dir;
+    try { dir = app.getPath('desktop'); } catch (_) { dir = os.homedir(); }
+    if (isMac) app.focus({ steal: true });
+    const r = await dialog.showSaveDialog(parent || undefined, {
+      title: '导出诊断信息', defaultPath: path.join(dir, `ClaudePet-诊断-${stamp()}.txt`), filters: [{ name: '文本文件', extensions: ['txt'] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true, error: '已取消' };
+    const text = await diagnosticsText();
+    // BOM + CRLF on Windows so old Notepad shows the Chinese text properly
+    await fs.promises.writeFile(r.filePath, '\ufeff' + (isWin ? text.replace(/\n/g, '\r\n') : text), 'utf8');
+    return { ok: true, path: r.filePath };
+  } catch (e) {
+    logError('diag', e);
+    return { ok: false, error: '导出失败：' + e.message };
+  }
+}
+async function exportFromMenu() {
+  const r = await exportDiagnostics();
+  if (r.ok) { send('ai', { type: 'notice', text: '诊断信息存好啦：' + path.basename(r.path) }); shell.showItemInFolder(r.path); }
+  else if (!r.canceled) send('ai', { type: 'notice', text: r.error });
+}
+handle('diag:export', (e) => exportDiagnostics(BrowserWindow.fromWebContents(e.sender)));
+
+// ---------- hardening: pages stay on app://pet/, open nothing, get no permissions except the chat's microphone ----------
+app.on('web-contents-created', (_e, wc) => {
+  wc.on('will-navigate', (ev, url) => { if (!String((ev && ev.url) || url || '').startsWith('app://pet/')) ev.preventDefault(); });
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.on('will-attach-webview', (ev) => ev.preventDefault());
+});
+function guardPermissions() {
+  session.defaultSession.setPermissionRequestHandler((wc, permission, cb, details) => {
+    let url = (details && details.requestingUrl) || '';
+    try { if (!url && wc && !wc.isDestroyed()) url = wc.getURL(); } catch (_) {}
+    url = String(url);
+    const types = (details && details.mediaTypes) || [];
+    cb(permission === 'media' && url.startsWith('app://pet/renderer/chat.html') && types.every((t) => t === 'audio'));
+  });
+}
+app.on('child-process-gone', (_e, d) => {
+  // the voice engine is stopped by us after 15 idle minutes; that is not worth a log line
+  if (d.reason === 'clean-exit' || (d.serviceName === 'ClaudePet Voice' && d.reason === 'killed')) return;
+  logError('child-process-gone', `${d.type}${d.serviceName ? ' ' + d.serviceName : ''}${d.name ? ' ' + d.name : ''}: ${d.reason} (${d.exitCode})`);
+});
 
 // ---------- lifecycle ----------
 app.on('second-instance', () => { if (win) { win.showInactive(); send('cmd', 'talk'); } });
 
 app.whenReady().then(() => {
+  if (!gotLock) return;
+  guardPermissions();
   registerAppProtocol();
   loadSettings();
   stickers.init();
+  if (typeof ai.setLogger === 'function') ai.setLogger(logError);
+  if (typeof reminders.setLogger === 'function') reminders.setLogger(logError);
   ai.init();
   // when we met (today first / last time, on which computer) is shared through the memory folder: note this start,
   // and keep noting it every few minutes while the user is at the computer
@@ -624,7 +920,7 @@ app.whenReady().then(() => {
   setInterval(() => { if (powerMonitor.getSystemIdleTime() < 300) ai.seen().catch(() => {}); }, 5 * 60000);
   ai.setOutfit(settings.outfit);
   reminders.init();
-  voice.init({ toPet: (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); }, broadcast: (ch, p) => { broadcast(ch, p); if (ch === 'voice:changed') refreshTray(); }, logError });
+  voice.init({ toPet: (ch, payload) => { if (win && !win.isDestroyed()) win.webContents.send(ch, payload); }, broadcast: (ch, p) => { broadcast(ch, p); if (ch === 'voice:changed') refreshTray(); }, logError, handle, on });
   planNextChat();
   setInterval(proactiveTick, 30000);
   setInterval(checkReminders, 15000);
@@ -637,7 +933,11 @@ app.whenReady().then(() => {
   createWindow();
   setupTray();
   screen.on('display-metrics-changed', () => send('cmd', 'display-changed'));
-  if (process.env.PET_TEST) { global.__pet = { speakUp, pro, checkReminders, reminders, lookAndComment, frontApp, captureScreen, voice, openChat, chatWin: () => chatWin, settingsWin: () => settingsWin, openSettings, setOutfit, send, settings: () => settings, stickers, pushSettings, ai }; require(process.env.PET_TEST)(() => win); }
+  if (process.env.PET_TEST) {
+    global.__pet = { speakUp, pro, checkReminders, reminders, lookAndComment, frontApp, captureScreen, voice, openChat, chatWin: () => chatWin, settingsWin: () => settingsWin, openSettings, setOutfit, send, settings: () => settings, stickers, pushSettings, ai,
+      lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu };
+    require(process.env.PET_TEST)(() => win);
+  }
   screen.on('display-removed', () => send('cmd', 'display-changed'));
 });
 

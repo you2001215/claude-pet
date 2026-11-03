@@ -1,0 +1,192 @@
+# Tests and installers on real Windows and Mac machines.
+# Every push / pull request: unit tests + start-up test on Linux, Windows and macOS (Apple chip), then the
+# Windows installer and the Mac zip are built, started once for 20 s, and kept as downloadable artifacts (14 days).
+# A v* tag additionally attaches them to the GitHub Release the owner already created by hand
+# (this workflow never creates or publishes a release).
+name: 测试和打包
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    name: 测试（Linux）
+    # a pull request from a branch the push trigger already builds would build the same commit twice
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && !startsWith(github.head_ref, 'claude/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 版本号和标签一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $VERSION (expected v$VERSION)"
+            exit 1
+          fi
+      - name: 虚拟屏幕
+        run: sudo apt-get update -q && sudo apt-get install -y -q xvfb
+      - run: npm ci
+      - name: 单元测试
+        run: npm test
+      - name: 离线语音运行库（校验 sha512）
+        run: npm run fetch-sherpa -- --verify
+      - name: 启动测试
+        run: npm run test:smoke
+
+  windows:
+    name: Windows 安装包
+    # a pull request from a branch the push trigger already builds would build the same commit twice
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && !startsWith(github.head_ref, 'claude/'))
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 单元测试
+        run: npm test
+      - name: 离线语音运行库（校验 sha512）
+        run: npm run fetch-sherpa -- --verify
+      - name: 启动测试
+        run: npm run test:smoke
+      - name: 打包
+        # bash, not PowerShell: PowerShell's npm.ps1 can swallow the "--" before the extra flag
+        shell: bash
+        run: npm run dist:win -- --publish never
+      - name: 计算 sha256
+        shell: bash
+        run: |
+          cd dist
+          for f in ClaudePet-Setup-*.exe; do sha256sum "$f" | sed 's/ \*/  /' > "$f.sha256"; cat "$f.sha256"; done
+      - name: 启动打包好的程序 20 秒（不能提前退出、不能写 error.log）
+        shell: pwsh
+        run: |
+          $data = Join-Path $env:RUNNER_TEMP 'pet-packaged'
+          $roaming = Join-Path $data 'Roaming'
+          $ud = Join-Path $data 'userData'
+          New-Item -ItemType Directory -Force -Path $roaming, $ud | Out-Null
+          $env:APPDATA = $roaming
+          $p = Start-Process -FilePath 'dist\win-unpacked\ClaudePet.exe' -ArgumentList "--user-data-dir=`"$ud`"" -PassThru
+          $null = $p.Handle   # keeps ExitCode readable after it ends
+          Start-Sleep -Seconds 20
+          $early = $p.HasExited
+          if (-not $early) { taskkill /PID $p.Id /T /F | Out-Null }
+          Start-Sleep -Seconds 2
+          $logs = @((Join-Path $ud 'error.log'), (Join-Path $roaming 'ClaudePet\error.log')) | Where-Object { Test-Path $_ }
+          foreach ($l in $logs) { Write-Host "---- $l"; Get-Content $l }
+          if ($early) { Write-Host "::error::ClaudePet.exe exited within 20 s (exit code $($p.ExitCode))"; exit 1 }
+          if ($logs) { Write-Host '::error::the packaged app wrote error.log'; exit 1 }
+          Write-Host 'packaged app ran for 20 s without writing error.log'
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudePet-windows
+          path: |
+            dist/ClaudePet-Setup-*.exe
+            dist/ClaudePet-Setup-*.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  mac:
+    name: Mac 版（Apple 芯片）
+    # a pull request from a branch the push trigger already builds would build the same commit twice
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || (github.head_ref != 'main' && !startsWith(github.head_ref, 'claude/'))
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 单元测试
+        run: npm test
+      - name: 离线语音运行库（校验 sha512）
+        run: npm run fetch-sherpa -- --verify
+      - name: 启动测试
+        run: npm run test:smoke
+      - name: 打包（electron-builder 做 ad-hoc 签名）
+        # electron-builder skips signing in pull requests unless told otherwise; ad-hoc signing uses no secrets
+        env:
+          CSC_FOR_PULL_REQUEST: 'true'
+        run: npm run dist:mac -- --publish never
+      - name: 检查签名
+        run: codesign --verify --deep --strict --verbose=2 dist/mac-arm64/ClaudePet.app
+      - name: 打成 zip 并计算 sha256
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          ZIP="ClaudePet-$VERSION-mac-arm64.zip"
+          ditto -c -k --keepParent dist/mac-arm64/ClaudePet.app "dist/$ZIP"
+          cd dist && shasum -a 256 "$ZIP" > "$ZIP.sha256" && cat "$ZIP.sha256"
+      - name: 启动打包好的程序 20 秒（不能提前退出、不能写 error.log）
+        run: |
+          UD="$RUNNER_TEMP/pet-packaged"
+          mkdir -p "$UD"
+          dist/mac-arm64/ClaudePet.app/Contents/MacOS/ClaudePet --user-data-dir="$UD" > "$RUNNER_TEMP/pet-packaged.log" 2>&1 &
+          PID=$!
+          sleep 20
+          if ! kill -0 "$PID" 2>/dev/null; then
+            cat "$RUNNER_TEMP/pet-packaged.log"
+            echo "::error::ClaudePet exited within 20 s"
+            exit 1
+          fi
+          kill "$PID"; sleep 2; kill -9 "$PID" 2>/dev/null || true
+          if [ -s "$UD/error.log" ]; then
+            cat "$UD/error.log"
+            echo "::error::the packaged app wrote error.log"
+            exit 1
+          fi
+          echo "packaged app ran for 20 s without writing error.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudePet-mac-arm64
+          path: |
+            dist/ClaudePet-*-mac-arm64.zip
+            dist/ClaudePet-*-mac-arm64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 传到已有的 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, windows, mac]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: 上传安装包（只往已有的 Release 里加文件）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l artifacts
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::notice::No release for $GITHUB_REF_NAME yet. Create it on GitHub by hand, then re-run this job (or download the files from the workflow artifacts)."
+            exit 0
+          fi
+          gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber --repo "$GITHUB_REPOSITORY"

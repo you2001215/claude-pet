@@ -5,38 +5,55 @@ window.Mic = (() => {
   const MAX_SEC = 30;
   let stream = null, ctx = null, node = null, src = null, sink = null;
   let chunks = [], total = 0, onLevel = null, onAutoStop = null;
+  let starting = false, abort = false;
 
+  // resolves true once recording, false when it did not start (already on, another start under way, cancelled meanwhile).
+  // Everything is built on locals and kept only at the end, so a failed or cancelled start never leaves the mic open.
   async function start(opts = {}) {
-    if (ctx) return;
-    onLevel = opts.onLevel || null;
-    onAutoStop = opts.onAutoStop || null;
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-    ctx = new AudioContext({ sampleRate: RATE });
-    await ctx.audioWorklet.addModule('mic-worklet.js');
-    src = ctx.createMediaStreamSource(stream);
-    node = new AudioWorkletNode(ctx, 'pcm-capture');
-    sink = ctx.createGain();
-    sink.gain.value = 0;                 // keep the graph pulled without playing the mic back
-    chunks = []; total = 0;
-    node.port.onmessage = (e) => {
-      const a = e.data;
-      chunks.push(a);
-      total += a.length;
-      if (onLevel) {
-        let sum = 0;
-        for (let i = 0; i < a.length; i++) sum += a[i] * a[i];
-        onLevel(Math.min(1, Math.sqrt(sum / a.length) * 6), total / RATE);
-      }
-      if (total >= MAX_SEC * RATE && onAutoStop) { const f = onAutoStop; onAutoStop = null; f(); }
-    };
-    src.connect(node);
-    node.connect(sink);
-    sink.connect(ctx.destination);
+    if (ctx || starting) return false;   // two quick clicks open the microphone once
+    starting = true; abort = false;
+    let s = null, c = null;
+    try {
+      s = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      if (abort) return false;
+      c = new AudioContext({ sampleRate: RATE });
+      await c.audioWorklet.addModule('mic-worklet.js');
+      if (abort) return false;
+      const sr = c.createMediaStreamSource(s);
+      const nd = new AudioWorkletNode(c, 'pcm-capture');
+      const sk = c.createGain();
+      sk.gain.value = 0;                 // keep the graph pulled without playing the mic back
+      onLevel = opts.onLevel || null;
+      onAutoStop = opts.onAutoStop || null;
+      chunks = []; total = 0;
+      nd.port.onmessage = (e) => {
+        const a = e.data;
+        chunks.push(a);
+        total += a.length;
+        if (onLevel) {
+          let sum = 0;
+          for (let i = 0; i < a.length; i++) sum += a[i] * a[i];
+          onLevel(Math.min(1, Math.sqrt(sum / a.length) * 6), total / RATE);
+        }
+        if (total >= MAX_SEC * RATE && onAutoStop) { const f = onAutoStop; onAutoStop = null; f(); }
+      };
+      sr.connect(nd);
+      nd.connect(sk);
+      sk.connect(c.destination);
+      stream = s; ctx = c; src = sr; node = nd; sink = sk;
+      s = c = null;                      // kept: cleanup() releases them from now on
+      return true;
+    } finally {
+      starting = false;
+      if (s) s.getTracks().forEach((t) => t.stop());
+      if (c) c.close().catch(() => {});
+    }
   }
 
   function cleanup() {
+    if (starting) abort = true;          // a start still waiting for the mic gives it back as soon as it gets it
     try { if (src) src.disconnect(); } catch (_) {}
     try { if (node) { node.port.onmessage = null; node.disconnect(); } } catch (_) {}
     if (stream) stream.getTracks().forEach((t) => t.stop());
@@ -68,5 +85,5 @@ window.Mic = (() => {
     return a.slice(s, e);
   }
 
-  return { start, stop, cancel, get recording() { return !!ctx; }, RATE };
+  return { start, stop, cancel, get recording() { return !!ctx; }, get starting() { return starting; }, RATE };
 })();

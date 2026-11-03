@@ -3,11 +3,12 @@
 //   speaking: Edge neural voices (online) -> Kokoro (offline, optional download) -> system voice
 //   listening: SenseVoice (offline, optional download)
 const { app, ipcMain } = require('electron');
-const fs = require('fs');
 const path = require('path');
 const edge = require('./edge-tts');
 const models = require('./models');
 const host = require('./engine-host');
+const store = require('../store');
+const { cleanForSpeech, splitForSpeech, forKokoro, speakable } = require('./text');
 
 const DEFAULTS = {
   speak: 'ai',          // off | ai (her AI replies) | all (also the little canned reactions)
@@ -31,9 +32,15 @@ let currentKokoro = null;
 
 function load() {
   cfgPath = path.join(app.getPath('userData'), 'voice.json');
-  try { cfg = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(cfgPath, 'utf8')) }; } catch (_) { cfg = { ...DEFAULTS }; }
+  // tmp + rename with a .bak like the other data files; a hand-edited file goes through the same checks as the
+  // settings page (unknown extra fields are kept)
+  const r = store.readJsonSync(cfgPath, null);
+  const raw = r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? r.data : null;
+  try { cfg = raw ? sanitize({ ...raw, ...DEFAULTS }, raw) : { ...DEFAULTS }; } catch (_) { cfg = { ...DEFAULTS }; }
+  const w = store.loadWarning(r, '语音设置文件（voice.json）', '语音设置回到了默认');
+  if (w) logError('voice', w);
 }
-function save() { try { fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 1)); } catch (_) {} }
+function save() { try { store.writeJsonSync(cfgPath, cfg); } catch (e) { logError('voice', '保存 voice.json 失败：' + e.message); } }
 
 function publicSettings() {
   return {
@@ -43,8 +50,9 @@ function publicSettings() {
     lastError: { ...lastError },
   };
 }
-function update(s) {
-  const n = { ...cfg };
+// only known values get through: voice:test uses this too, so nothing unchecked reaches Edge's SSML
+function sanitize(base, s) {
+  const n = { ...base };
   if (['off', 'ai', 'all'].includes(s.speak)) n.speak = s.speak;
   if (typeof s.muted === 'boolean') n.muted = s.muted;
   if (['edge', 'kokoro', 'system'].includes(s.engine)) n.engine = s.engine;
@@ -55,53 +63,12 @@ function update(s) {
   if (typeof s.systemVoice === 'string') n.systemVoice = s.systemVoice.slice(0, 200);
   if (Number.isFinite(+s.volume)) n.volume = Math.max(0, Math.min(1, +s.volume));
   if (typeof s.autoSend === 'boolean') n.autoSend = s.autoSend;
-  cfg = n;
+  return n;
+}
+function update(s) {
+  cfg = sanitize(cfg, s || {});
   save();
   return publicSettings();
-}
-
-// ---------- text clean-up ----------
-function cleanForSpeech(t) {
-  let s = String(t || '');
-  s = s.replace(/\[(?:sticker|表情)[:：][^\]\n]*\]/giu, '');
-  s = s.replace(/<[^>]{1,80}>/g, '');
-  s = s.replace(/[（(][^（）()\n]{0,16}[）)]/g, '');           // （歪头） stage directions and (≧▽≦) faces
-  s = s.replace(/\*[^*\n]{1,16}\*/g, '');                      // *叉腰*
-  s = s.replace(/https?:\/\/\S+/g, '这个链接');
-  s = s.replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\uFE0F\u200D]/gu, '');
-  s = s.replace(/[♪♫♬★☆♥♡❤✧✦✨・ω]+/g, '');
-  s = s.replace(/[~～]{2,}/g, '～');
-  s = s.replace(/\s+/g, ' ').trim();
-  return Array.from(s).slice(0, 400).join('');
-}
-const speakable = (s) => /[\p{L}\p{N}]/u.test(s);
-// split into pieces of at most ~max characters, preferring sentence ends, then commas
-function splitForSpeech(s, max) {
-  const sentences = s.match(/[^。！？!?；;\n]+[。！？!?；;\n]*|[。！？!?；;\n]+/g) || [s];
-  const out = [];
-  let cur = '';
-  const push = (t) => { if (t.trim()) out.push(t.trim()); };
-  for (let sen of sentences) {
-    while (Array.from(sen).length > max) {
-      const a = Array.from(sen);
-      let cut = a.slice(0, max).join('').search(/[，,、：:][^，,、：:]*$/);
-      cut = cut > max / 3 ? cut + 1 : max;
-      push(cur); cur = '';
-      push(a.slice(0, cut).join(''));
-      sen = a.slice(cut).join('');
-    }
-    if (Array.from(cur + sen).length > max) { push(cur); cur = sen; } else cur += sen;
-  }
-  push(cur);
-  return out.length ? out : [s];
-}
-function forKokoro(s) {
-  return s
-    .replace(/claude/gi, '克劳德')
-    .replace(/deep\s?seek/gi, '迪普西克')
-    .replace(/(\d{1,2})[:：](\d{2})/g, (_, h, m) => `${+h}点${m === '00' ? '' : (+m) + '分'}`)
-    .replace(/[!！]+\s*(?=[A-Za-z])/g, '。')
-    .replace(/～/g, '，');
 }
 
 // ---------- speaking ----------
@@ -117,6 +84,10 @@ function engineOrder(c) {
   if (c.engine === 'kokoro') return kok ? ['kokoro', 'system'] : ['system'];
   return kok ? ['edge', 'kokoro', 'system'] : ['edge', 'system'];
 }
+// Edge unreachable twice in a row (offline, blocked network): skip it for a while so she does not stall
+// 12 s before every line; a settings-page test always tries it
+const EDGE_TRIP = ['net', 'timeout', 'http', 'closed'];
+const edgeBreak = { fails: 0, until: 0 };
 
 async function speakWith(c, text, why) {
   const clean = cleanForSpeech(text);
@@ -127,6 +98,7 @@ async function speakWith(c, text, why) {
   if (c.engine === 'kokoro' && !models.isInstalled('tts')) errors.push('离线语音模型还没下载，先用系统语音');
   for (const eng of engineOrder(c)) {
     if (job !== speakSeq) return { ok: false, error: 'interrupted' };
+    if (eng === 'edge' && why !== 'test' && Date.now() < edgeBreak.until) continue;
     try {
       if (eng === 'edge') {
         // long replies go in pieces: the first plays while the next one is being made
@@ -136,6 +108,7 @@ async function speakWith(c, text, why) {
         if (job !== speakSeq) return { ok: false, error: 'interrupted' };
         toPet('voice:play', { job, kind: 'mp3', data: first, volume: c.volume });
         lastError.edge = '';
+        edgeBreak.fails = 0; edgeBreak.until = 0;
         (async () => {
           for (const t of parts.slice(1)) {
             if (job !== speakSeq) return;
@@ -173,6 +146,10 @@ async function speakWith(c, text, why) {
       lastError[eng] = e.message;
       errors.push(e.message);
       logError('voice:' + eng + (why ? ':' + why : ''), e);
+      if (eng === 'edge' && EDGE_TRIP.includes(e.code) && ++edgeBreak.fails >= 2) {
+        edgeBreak.fails = 0; edgeBreak.until = Date.now() + 10 * 60000;
+        lastError.edge = e.message + '（连续两次没连上，接下来 10 分钟先用别的声音，之后再试）';
+      }
     }
   }
   return { ok: false, error: errors.join('；'), errors };
@@ -214,15 +191,22 @@ async function transcribe(buf, sampleRate) {
 }
 
 // ---------- setup ----------
+// IPC is only taken from our own pages (app://pet/...); main.js passes in its guarded helpers, these are the fallback
+const fromApp = (e) => { try { return String((e && e.senderFrame && e.senderFrame.url) || '').startsWith('app://pet/'); } catch (_) { return false; } };
+const guardHandle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => (fromApp(e) ? fn(e, ...a) : undefined));
+const guardOn = (ch, fn) => ipcMain.on(ch, (e, ...a) => { if (fromApp(e)) fn(e, ...a); });
+const known = (id) => typeof id === 'string' && Object.prototype.hasOwnProperty.call(models.CATALOG, id);
+
 function init(opts) {
   toPet = opts.toPet; broadcast = opts.broadcast; logError = opts.logError || logError;
+  const handle = opts.handle || guardHandle, on = opts.on || guardOn;
   load();
-  ipcMain.handle('voice:get', () => publicSettings());
-  ipcMain.handle('voice:set', (_e, s) => update(s || {}));
-  ipcMain.handle('voice:test', (_e, s, text) => speakWith({ ...cfg, ...(s || {}) }, text || '你好呀，我是大肥鱼！今天也要好好吃饭哦。', 'test').catch((e) => ({ ok: false, error: e.message })));
-  ipcMain.handle('voice:transcribe', (_e, buf, rate) => transcribe(buf, rate));
-  ipcMain.handle('voice:download', async (_e, id) => {
-    if (!models.CATALOG[id]) return { ok: false, error: 'unknown' };
+  handle('voice:get', () => publicSettings());
+  handle('voice:set', (_e, s) => update(s || {}));
+  handle('voice:test', (_e, s, text) => speakWith(sanitize(cfg, s || {}), typeof text === 'string' && text.trim() ? text : '你好呀，我是大肥鱼！今天也要好好吃饭哦。', 'test').catch((e) => ({ ok: false, error: e.message })));
+  handle('voice:transcribe', (_e, buf, rate) => transcribe(buf, rate));
+  handle('voice:download', async (_e, id) => {
+    if (!known(id)) return { ok: false, error: 'unknown' };
     try {
       await models.download(id, (p) => broadcast('voice:progress', p));
       broadcast('voice:models', publicSettings().models);
@@ -232,18 +216,18 @@ function init(opts) {
       return { ok: false, error: e.message, code: e.code };
     }
   });
-  ipcMain.handle('voice:cancel-download', (_e, id) => { models.cancel(id); return true; });
-  ipcMain.handle('voice:remove-model', (_e, id) => {
-    if (!models.CATALOG[id]) return null;
+  handle('voice:cancel-download', (_e, id) => { if (known(id)) models.cancel(id); return true; });
+  handle('voice:remove-model', (_e, id) => {
+    if (!known(id)) return null;
     host.stop();
     const st = models.remove(id);
     broadcast('voice:models', publicSettings().models);
     return st;
   });
-  ipcMain.on('voice:stop', () => stopSpeaking());
-  ipcMain.on('voice:warm', (_e, what) => { if (what === 'asr' || what === 'tts') warm(what); });
+  on('voice:stop', () => stopSpeaking());
+  on('voice:warm', (_e, what) => { if (what === 'asr' || what === 'tts') warm(what); });
   setTimeout(() => warm('tts'), 20000);
-  ipcMain.on('voice:line', (_e, text) => { speak(text, { canned: true }); });
+  on('voice:line', (_e, text) => { speak(text, { canned: true }); });
 }
 
 const isMuted = () => cfg.muted;

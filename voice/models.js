@@ -80,10 +80,25 @@ function sha256File(file, upto) {
   });
 }
 
+// a full disk or a read-only folder will not get better by trying another mirror: stop the whole download
+const diskError = (e) => Object.assign(new Error('写入失败（硬盘可能满了，或者没有写入权限）'), { code: 'disk', cause: e });
+const onDisk = (fn) => { try { return fn(); } catch (e) { throw diskError(e); } };
+// Windows: an antivirus or the search indexer often holds a freshly written 100+ MB file for a moment, so a failed
+// rename is retried before it counts as a disk problem
+async function renameRetry(from, to, signal) {
+  for (let i = 0; ; i++) {
+    try { fs.renameSync(from, to); return; } catch (e) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(e.code) || i >= 6) throw diskError(e);
+      await new Promise((r) => setTimeout(r, 200 * (i + 1)));
+      if (signal && signal.aborted) throw Object.assign(new Error('已取消'), { code: 'aborted' });
+    }
+  }
+}
+
 let preferred = 0;   // the source that worked last time goes first
 async function fetchFile(m, f, dest, onBytes, signal) {
   const part = dest + '.part';
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  onDisk(() => fs.mkdirSync(path.dirname(dest), { recursive: true }));
   let lastErr = null;
   const order = SOURCES.map((_, i) => (i + preferred) % SOURCES.length);
   for (const si of order) {
@@ -114,29 +129,41 @@ async function fetchFile(m, f, dest, onBytes, signal) {
         onBytes(have, src);
         if (res) {
           const out = fs.createWriteStream(part, { flags: have > 0 ? 'a' : 'w' });
+          let wErr = null;
+          out.on('error', (e) => { wErr = wErr || e; });
+          // waiting for the disk also ends on a write error or a cancel, so the job always settles
+          const drained = () => new Promise((r) => {
+            const fin = () => { out.off('drain', fin); out.off('error', fin); out.off('close', fin); ctrl.signal.removeEventListener('abort', fin); r(); };
+            out.on('drain', fin); out.on('error', fin); out.on('close', fin); ctrl.signal.addEventListener('abort', fin);
+          });
           const reader = res.body.getReader();
           try {
             for (;;) {
+              if (wErr) break;
               const { done, value } = await reader.read();
               if (done) break;
               const buf = Buffer.from(value);
               kick(30000);
               hash.update(buf);
               have += buf.length;
-              if (!out.write(buf)) await new Promise((r) => out.once('drain', r));
+              if (!out.write(buf) && !wErr && !ctrl.signal.aborted) await drained();
               onBytes(have, src);
               if (have > f.bytes) throw new Error('文件比预期大');
             }
-          } finally { await new Promise((r) => out.end(r)); }
+          } finally {
+            await new Promise((r) => { if (out.closed) return r(); out.once('close', r); if (!out.destroyed) out.end(); });
+          }
+          if (wErr) { ctrl.abort(); throw diskError(wErr); }
         }
         if (have !== f.bytes) throw new Error(`下载不完整（${have}/${f.bytes}）`);
         const digest = hash.digest('hex');
         if (digest !== f.sha256) { fs.rmSync(part, { force: true }); throw new Error('校验失败（文件内容不对）'); }
-        fs.renameSync(part, dest);
+        await renameRetry(part, dest, signal);
         preferred = si;
         return;
       } catch (e) {
         if (signal.aborted) throw Object.assign(new Error('已取消'), { code: 'aborted' });
+        if (e.code === 'disk') throw e;
         lastErr = stalled ? new Error('连接卡住了') : e;
         // a 4xx from this source will not get better by retrying it
         if ((e.code === 'http' && e.status >= 400 && e.status < 500) || stalled) break;
@@ -151,7 +178,8 @@ async function fetchFile(m, f, dest, onBytes, signal) {
 
 // download everything that is missing; onProgress({ done, total, file, source })
 function download(id, onProgress) {
-  if (jobs[id]) return jobs[id].promise;
+  if (!Object.hasOwn(CATALOG, id)) return Promise.reject(Object.assign(new Error('unknown'), { code: 'unknown' }));
+  if (Object.hasOwn(jobs, id)) return jobs[id].promise;
   const m = CATALOG[id];
   const ctrl = new AbortController();
   const job = { abort: () => ctrl.abort(), progress: { done: 0, total: m.total, file: '', source: '' } };
@@ -165,7 +193,7 @@ function download(id, onProgress) {
   };
   job.promise = (async () => {
     const dir = dirOf(id);
-    fs.mkdirSync(dir, { recursive: true });
+    onDisk(() => fs.mkdirSync(dir, { recursive: true }));
     try { fs.rmSync(path.join(dir, '.ok.json'), { force: true }); } catch (_) {}
     let base = 0;
     for (const f of m.files) {
@@ -180,13 +208,13 @@ function download(id, onProgress) {
       job.progress.done = base;
       emit(true);
     }
-    fs.writeFileSync(path.join(dir, '.ok.json'), JSON.stringify({ rev: m.rev, at: new Date().toISOString() }));
+    onDisk(() => fs.writeFileSync(path.join(dir, '.ok.json'), JSON.stringify({ rev: m.rev, at: new Date().toISOString() })));
     return status(id);
   })().finally(() => { delete jobs[id]; emit(true); });
   return job.promise;
 }
 
-function cancel(id) { if (jobs[id]) jobs[id].abort(); }
+function cancel(id) { if (Object.hasOwn(jobs, id)) jobs[id].abort(); }
 function remove(id) {
   cancel(id);
   fs.rmSync(dirOf(id), { recursive: true, force: true });

@@ -1,22 +1,27 @@
 {
   "name": "claude-pet",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "private": true,
   "main": "main.js",
   "devDependencies": {
-    "electron": "^45.0.0",
+    "electron": "^45.2.1",
     "electron-builder": "^26.18.0",
     "resedit": "^3.1.0"
   },
   "productName": "ClaudePet",
   "description": "大肥鱼（cos Claude）AI 桌宠：会聊天、会提醒、会说话的桌面宠物",
   "author": "you2001215",
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "start": "electron .",
     "fetch-sherpa": "node scripts/fetch-sherpa.js",
     "prestart": "node scripts/fetch-sherpa.js",
-    "dist:win": "node scripts/fetch-sherpa.js win && electron-builder --win",
-    "dist:mac": "node scripts/fetch-sherpa.js mac && electron-builder --mac"
+    "test": "node --test \"tests/**/*.test.js\"",
+    "test:smoke": "node scripts/smoke-test.js",
+    "dist:win": "node scripts/fetch-sherpa.js win --verify && electron-builder --win",
+    "dist:mac": "node scripts/fetch-sherpa.js mac --verify && electron-builder --mac"
   },
   "build": {
     "appId": "com.fanmade.claudepet",
@@ -29,6 +34,8 @@
     "files": [
       "main.js",
       "ai.js",
+      "ai-parse.js",
+      "store.js",
       "stickers.js",
       "reminders.js",
       "preload.js",
@@ -44,6 +51,13 @@
     "asar": true,
     "npmRebuild": false,
     "afterPack": "build/afterPack.js",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "onlyLoadAppFromAsar": true,
+      "resetAdHocDarwinSignature": true
+    },
     "mac": {
       "target": [
         {
@@ -55,7 +69,7 @@
       ],
       "icon": "build/icon.icns",
       "category": "public.app-category.entertainment",
-      "identity": null,
+      "identity": "-",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "extendInfo": {

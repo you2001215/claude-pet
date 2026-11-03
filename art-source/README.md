@@ -13,7 +13,7 @@ Claude 装大肥鱼的原始素材，桌宠里用的立绘和动画都是由这�
 ## 处理流程
 
 - **立绘 → 桌宠里的透明立绘（`assets/pet/`）：** 抠掉白底或绿幕，再按脚底位置对齐。
-- **动画 → 桌宠里的透明动画（`assets/claude/`）：** 运行 `python3 tools/process_clip.py 动画/待机.mp4 ../assets/claude/待机.webm`。脚本会抠绿幕、去绿边，按第一帧把人物缩放并对齐到统一位置，输出透明 VP9 视频。
+- **动画 → 桌宠里的透明动画（`assets/claude/`）：** 在仓库根目录运行 `python3 tools/process_clip.py art-source/动画/待机.mp4 assets/claude/待机.webm 预览.png`（Windows 上把 `python3` 换成 `python`），再看一眼预览图。脚本会抠绿幕、去绿边，按第一帧把人物缩放并对齐到统一位置，输出透明 VP9 视频。
 
 ## 授权
 

@@ -1,6 +1,7 @@
-// Runs after electron-builder lays out the app folder.
+// Runs after electron-builder lays out the app folder (before it flips the Electron fuses and signs).
 // Windows: set the exe icon + version info without wine (resedit is pure JS).
-// macOS: ad-hoc sign the bundle with rcodesign (codesign isn't available on Linux).
+// macOS: on a Mac electron-builder itself signs the bundle ad-hoc (mac.identity "-"), nothing to do here.
+// Building the Mac app on Linux: ad-hoc sign with rcodesign (codesign isn't available there).
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -39,9 +40,17 @@ module.exports = async (ctx) => {
     fs.writeFileSync(exePath, Buffer.from(exe.generate()));
     console.log('  • afterPack: exe icon/version set');
   }
-  if (ctx.electronPlatformName === 'darwin') {
+  if (ctx.electronPlatformName === 'darwin' && process.platform !== 'darwin') {
     const app = path.join(ctx.appOutDir, `${name}.app`);
     const rc = process.env.RCODESIGN;
+    // electron-builder flips the fuses after this hook and then calls codesign for resetAdHocDarwinSignature, which
+    // doesn't exist off a Mac. So flip them here first (flipping again later writes the same bytes, the signature
+    // stays valid) and turn the codesign call off for this build.
+    const fuses = ctx.packager.config.electronFuses;
+    if (fuses) {
+      if (rc && fs.existsSync(rc)) await ctx.packager.addElectronFuses(ctx, { ...(await ctx.packager.generateFuseConfig(fuses)), resetAdHocDarwinSignature: false });
+      fuses.resetAdHocDarwinSignature = false;
+    }
     if (rc && fs.existsSync(rc)) {
       execFileSync(rc, ['sign', app], { stdio: 'inherit' });
       console.log('  • afterPack: ad-hoc signed', app);

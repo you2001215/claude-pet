@@ -2,16 +2,25 @@
 (() => {
   const U = window.ui;
   const $ = (id) => document.getElementById(id);
-  let current = null;
+  let current = null;   // the settings as last filled in: its notes and persona go back as notesBase / personaBase
 
   function fill(s) {
     current = s;
+    $('dataWarn').textContent = s.dataWarning ? '⚠ ' + s.dataWarning : '';
+    $('dataWarn').hidden = !s.dataWarning;
     $('keyState').textContent = s.hasKey ? `已保存：${s.keyMasked}${s.encrypted ? '' : '（这台电脑不支持加密保存）'}` : '还没有';
     $('baseUrl').value = s.baseUrl;
     $('model').value = s.model;
     $('persona').value = s.persona;
     $('memoryOn').checked = s.memoryOn;
     $('notes').value = (s.notes || []).join('\n');
+    $('noteCount').textContent = s.maxNotes ? `已记住 ${s.noteCount ?? (s.notes || []).length} / ${s.maxNotes} 条` : '';
+    const skipped = Array.isArray(s.notesSkipped) ? s.notesSkipped : [];
+    // what didn't fit stays in the box, so it can go in once some old ones are deleted
+    if (skipped.length) $('notes').value += ($('notes').value ? '\n' : '') + skipped.join('\n');
+    $('notesFull').textContent = skipped.length ? `记忆本满了（${s.maxNotes} 条），刚加的 ${skipped.length} 条没存上（还留在框里最后）。删掉一些用不着的旧记忆，再点「保存」。`
+      : s.memoryFull ? `记忆本满了（${s.maxNotes} 条），她记不住新的事了。删掉一些用不着的，再点「保存」。` : '';
+    $('notesFull').hidden = !skipped.length && !s.memoryFull;
     $('turns').value = s.historyTurns;
     $('proactive').value = s.proactive;
     $('whisper').value = s.whisper || 'canned';
@@ -42,6 +51,9 @@
       persona: $('persona').value,
       memoryOn: $('memoryOn').checked,
       notes: $('notes').value.split('\n'),
+      // what the page showed: main applies only what you changed here, so memories learned meanwhile are kept
+      notesBase: current && Array.isArray(current.notes) ? current.notes : undefined,
+      personaBase: current && typeof current.persona === 'string' ? current.persona : undefined,
       historyTurns: Number($('turns').value) || 12,
       proactive: $('proactive').value,
       whisper: $('whisper').value,
@@ -69,22 +81,27 @@
   }
 
   async function save() {
+    const typed = $('baseUrl').value;
     const s = await U.saveSettings(collect());
     $('key').value = '';
     fill(s);
+    // the address was refused: keep what was typed so it can be fixed
+    if (s.baseUrlError) { $('baseUrl').value = typed; msg('connMsg', s.baseUrlError, false); }
     return s;
   }
 
   $('import').addEventListener('click', async () => {
     const r = await U.importDsh();
     if (r.ok) {
-      msg('connMsg', `导入成功：${r.provider || 'DeepSeek'} · ${r.model} · ${r.keyMasked}`, true);
       fill(await U.getSettings());
+      // a plain-http address on the internet is not taken over (the key would go there unencrypted)
+      if (r.baseUrlError) msg('connMsg', `导入了 Key 和模型，但接口地址没改：${r.baseUrlError}`, false);
+      else msg('connMsg', `导入成功：${r.provider || 'DeepSeek'} · ${r.model} · ${r.keyMasked}`, true);
       loadModels();
     } else msg('connMsg', r.error, false);
   });
   $('test').addEventListener('click', async () => {
-    await save();
+    if ((await save()).baseUrlError) return;
     msg('connMsg', '测试中…', true);
     const r = await U.test();
     if (r.ok) { msg('connMsg', '连上了！可以去和她聊天了。', true); loadModels(); }
@@ -103,16 +120,38 @@
   // switching where memories live saves right away, so the persona and notes shown below come from the new place
   $('memoryWhere').addEventListener('change', async () => {
     if ($('memoryWhere').value === 'folder' && !$('sharedDir').value) { showFolder(null); return; }
-    fill(await save());
+    await save();
   });
   $('pickFolder').addEventListener('click', async () => {
     const d = await U.pickFolder();
     if (!d) return;
     $('sharedDir').value = d;
-    fill(await save());
+    await save();
   });
   $('resetPersona').addEventListener('click', () => { if (current) $('persona').value = current.defaultPersona; });
-  $('save').addEventListener('click', async () => { await save(); msg('saveMsg', '已保存', true); });
+  $('save').addEventListener('click', async () => {
+    const s = await save();
+    if (s.baseUrlError) msg('saveMsg', '别的都保存了，只有接口地址没改（见上面「连接」）', false);
+    else msg('saveMsg', '已保存', true);
+  });
+  $('diagBtn').addEventListener('click', async () => {
+    msg('diagMsg', '正在整理…', true);
+    const r = await U.exportDiagnostics();
+    if (r && r.ok) msg('diagMsg', '已保存到：' + r.path, true);
+    else msg('diagMsg', (r && r.error) || '没能导出', !!(r && r.canceled));
+  });
+  // licence texts: read the first time each one is opened, shown as plain text
+  document.querySelectorAll('details[data-src]').forEach((d) => d.addEventListener('toggle', async () => {
+    if (!d.open || d.dataset.loaded) return;
+    const pre = d.querySelector('pre');
+    d.dataset.loaded = '1';
+    pre.textContent = '读取中…';
+    try {
+      const r = await fetch(d.dataset.src);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      pre.textContent = await r.text();
+    } catch (e) { pre.textContent = '读不到这个文件：' + e.message; delete d.dataset.loaded; }
+  }));
   $('cancel').addEventListener('click', () => U.close());
 
   async function refreshStickerState() {

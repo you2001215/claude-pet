@@ -1,23 +1,32 @@
 'use strict';
 // Timed reminders the user explicitly asks for ("17点提醒我开会").
-const { app } = require('electron');
-const fs = require('fs');
+// electron is only loaded inside init() (to find the data folder), so tests can require this file from plain Node.
 const path = require('path');
+const store = require('./store');
 
 let file;
 let list = [];   // { id, at, text, created, done }
+let warning = '';
+let logger = null;
+const early = [];   // messages logged before setLogger was called
+const log = (msg) => { if (logger) { try { logger('reminders', msg); } catch (_) {} } else early.push(msg); };
+function setLogger(fn) { logger = typeof fn === 'function' ? fn : null; if (logger) early.splice(0).forEach(log); }
 
-function init() {
-  file = path.join(app.getPath('userData'), 'reminders.json');
-  try { list = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { list = []; }
-  if (!Array.isArray(list)) list = [];
+function init(dir) {
+  file = path.join(dir || require('electron').app.getPath('userData'), 'reminders.json');
+  const r = store.readJsonSync(file, []);
+  list = (Array.isArray(r.data) ? r.data : []).filter((x) => x && typeof x === 'object' && Number.isFinite(x.at));
+  for (const x of list) x.text = String(x.text == null ? '' : x.text);
+  warning = store.loadWarning(r, '提醒文件', '之前设的提醒没有了，要重新设一下');
+  if (warning) log(warning);
 }
 function save() {
   // keep pending ones plus the last few finished
   const pending = list.filter((r) => !r.done);
   const done = list.filter((r) => r.done).slice(-20);
   list = [...done, ...pending];
-  fs.writeFileSync(file, JSON.stringify(list, null, 1));
+  if (!file) return;   // init() not called (tests): memory only
+  try { store.writeJsonSync(file, list); } catch (e) { log('保存提醒失败：' + e.message); }
 }
 
 // "2026-10-25 17:00" (local time) -> ms
@@ -50,10 +59,22 @@ function add(at, text) {
   return { ok: true, reminder: r, label: `${fmt(t)} ${r.text}` };
 }
 
+// does a cancel keyword hit this reminder? The other way round (the reminder's text inside the keyword, "开会提醒" for
+// "开会") counts for texts of 2+ characters, so a one-character reminder like "水" isn't hit by every keyword that
+// happens to contain it. Filler words the model adds to a keyword ("的提醒", "那个") are tried without as well.
+const FILLER = /(?:的?提醒(?:我)?|那个|这个|一下|我的|我)/g;
+function matches(keyword, text) {
+  const k = String(keyword || '').trim(), t = String(text || '').trim();
+  if (!k || !t) return false;
+  if (t.includes(k) || (Array.from(t).length >= 2 && k.includes(t))) return true;
+  const bare = k.replace(FILLER, '').trim();
+  return !!bare && bare !== k && Array.from(bare).length >= 2 && t.includes(bare);
+}
+
 function cancel(keyword) {
   const k = String(keyword || '').trim();
   const pending = list.filter((r) => !r.done);
-  const hit = /^(全部|所有|all)$/i.test(k) ? pending : pending.filter((r) => k && (r.text.includes(k) || k.includes(r.text)));
+  const hit = /^(全部|所有|all)$/i.test(k) ? pending : pending.filter((r) => matches(k, r.text));
   for (const r of hit) r.done = true;
   if (hit.length) save();
   return hit.map((r) => `${fmt(r.at)} ${r.text}`);
@@ -87,4 +108,4 @@ function contextLine() {
   return p.length ? '已设的提醒：' + p.map((r) => `${r.label} ${r.text}`).join('；') : '';
 }
 
-module.exports = { init, add, cancel, remove, pending, takeDue, contextLine, fmt };
+module.exports = { init, add, cancel, remove, pending, takeDue, contextLine, fmt, parseLocal, matches, setLogger, warning: () => warning };

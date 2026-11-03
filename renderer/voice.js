@@ -4,6 +4,10 @@
   const P = window.pet;
   let ctx = null, gain = null, analyser = null;
   let job = 0, nextT = 0, sources = [], endMarked = false;
+  // a job counts as speaking from its first piece until its end marker and the last source are done, so the short
+  // gaps between Edge pieces or Kokoro chunks are not silence; SAFE_S of nothing new to play ends it anyway
+  let talking = false;
+  const SAFE_S = 8;
   let sysSpeaking = false, sysStart = 0;
   let queue = Promise.resolve();
   const td = new Float32Array(512);
@@ -27,12 +31,13 @@
     sources = [];
     nextT = 0;
     endMarked = false;
+    talking = false;
     if (sysSpeaking || (window.speechSynthesis && speechSynthesis.speaking)) { try { speechSynthesis.cancel(); } catch (_) {} }
     sysSpeaking = false;
   }
 
   function checkEnd() {
-    if (endMarked && !sources.length) { endMarked = false; }
+    if (endMarked && !sources.length) { endMarked = false; talking = false; }
   }
 
   async function handlePlay(m) {
@@ -57,6 +62,7 @@
     src.start(at);
     nextT = at + buf.duration;
     sources.push(src);
+    talking = true;
     src.onended = () => { sources = sources.filter((x) => x !== src); checkEnd(); };
   }
 
@@ -94,7 +100,9 @@
 
   function speaking() {
     if (sysSpeaking) return true;
-    return !!ctx && (sources.length > 0 && ctx.currentTime < nextT + 0.05);
+    if (!ctx) return false;
+    if (sources.length > 0 && ctx.currentTime < nextT + 0.05) return true;
+    return talking && ctx.currentTime < nextT + SAFE_S;   // between pieces: the next one is on its way
   }
   // 0..1 loudness, smoothed; the system voice has no signal to measure, so fake a gentle talk rhythm
   function readLevel() {

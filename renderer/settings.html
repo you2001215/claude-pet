@@ -10,6 +10,7 @@
 <div class="settings">
   <h1>AI 设置</h1>
   <p class="sub">大肥鱼（cos Claude）用 DeepSeek（或任何 OpenAI 兼容接口）来聊天。Key 只加密保存在这台电脑上。</p>
+  <div class="warnbox" id="dataWarn" hidden></div>
 
   <div class="card">
     <h2>连接</h2>
@@ -66,8 +67,9 @@
     <h2>记忆</h2>
     <label class="switch"><input type="checkbox" id="memoryOn"> 让她自己记住你说过的重要的事</label>
     <div class="row" style="margin-top:10px">
-      <label>她记得的事（一行一条，可以直接改、删、加）</label>
+      <label>她记得的事（一行一条，可以直接改、删、加） <span id="noteCount" class="count"></span></label>
       <textarea id="notes" rows="6" spellcheck="false" placeholder="比如：怎么称呼我、喜欢吃什么、最近在忙什么"></textarea>
+      <div class="msgline err" id="notesFull" hidden></div>
     </div>
     <div class="row">
       <label>每次带上最近几轮对话</label>
@@ -109,6 +111,7 @@
       </select>
     </div>
     <p class="note">女仆装的动画和大肥鱼梗图来自 <a href="#" data-url="https://github.com/PC2005-cloud/dsh-pet">dsh-pet</a>（素材仅限非商业使用）。大肥鱼是社区二创形象，不是 DeepSeek 官方形象：原型「溟月」出自 B 站 <a href="#" data-url="https://space.bilibili.com/4456176">@上善无形</a>，女仆鲸鱼娘设计出自 B 站 <a href="#" data-url="https://space.bilibili.com/4168597">@ZipZipPipe</a>，按 <a href="#" data-url="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans">CC BY-NC-SA 4.0</a> 授权。</p>
+    <p class="note">Claude 装的立绘和动画都是 AI 生成的：立绘用 Google Gemini 生成，动画用 AI 视频工具做成绿幕视频后再抠像。</p>
   </div>
 
   <div class="card" id="voiceCard">
@@ -165,9 +168,9 @@
   <div class="card">
     <h2>看屏幕</h2>
     <div class="row">
-      <label>你在用浏览器时，她偶尔自己看一眼屏幕并点评</label>
+      <label>你在用浏览器时，她偶尔自己看一眼屏幕并点评（默认关着）</label>
       <select id="look">
-        <option value="off">不要自己看</option>
+        <option value="off">不要自己看（默认）</option>
         <option value="sometimes">偶尔（约每 30～50 分钟）</option>
         <option value="often">经常（约每 10～18 分钟）</option>
       </select>
@@ -176,7 +179,8 @@
       <label>看图用的模型（要能看图片，DeepSeek 用 deepseek-flash）</label>
       <input id="visionModel" placeholder="deepseek-flash" spellcheck="false">
     </div>
-    <p class="note">也可以随时右键选「看看我在看什么」，或在聊天框点「看屏幕」再发消息。截图只在那一刻截取当前屏幕（不会截到她自己和聊天框），发给你设置的 AI 接口后就丢掉，不存在电脑上。看聊天记录、网银这类页面时建议先关掉自动看。Mac 第一次用需要在「系统设置 → 隐私与安全性 → 录屏与系统录音」里允许 ClaudePet。</p>
+    <p class="note">打开自动看以后，她每次都会先冒一个「让我偷偷瞄一眼你的屏幕…」的气泡，过一两秒才截图，不会背着你看。有好几块屏幕时只截一块：Windows 上自动看截的是浏览器所在的那块，其他时候截鼠标所在的那块。</p>
+    <p class="note">也可以随时右键选「看看我在看什么」，或在聊天框点「看屏幕」再发消息。截图只在那一刻截取（不会截到她自己和聊天框），发给你设置的 AI 接口后就丢掉，不存在电脑上。看聊天记录、网银这类页面时建议先关掉自动看。Mac 第一次用要先右键点一次「看看我在看什么」，在系统弹窗里允许录屏再重启她，自动看屏幕才会开始；每次更新后如果不灵了，到「系统设置 → 隐私与安全性 → 录屏与系统录音」里把 ClaudePet 删掉再加回来。</p>
   </div>
 
   <div class="card">
@@ -201,6 +205,25 @@
     <div class="msgline" id="stickerMsg"></div>
     <img id="stickerPreview" alt="" style="display:none;max-width:96px;border-radius:8px;margin-top:6px">
     <p class="note" style="margin-top:10px">大肥鱼表情包作者：B站 <a href="#" data-url="https://space.bilibili.com/103739">可以叫我云大人</a>，<a href="#" data-url="https://kiriyuki.com">kiriyuki.com</a> 制作。表情数据来自 <a href="#" data-url="https://github.com/Loping151/dsh-nekowhale-stickers">dsh-nekowhale-stickers</a>（CC BY-NC 4.0，仅限非商业使用）。图片在第一次用到时从 kiriyuki.com 下载，之后存在本机。</p>
+  </div>
+
+  <div class="card">
+    <h2>遇到问题</h2>
+    <div class="inline"><button id="diagBtn">导出诊断信息</button><span class="note">右键菜单里也能导出</span></div>
+    <div class="msgline" id="diagMsg"></div>
+    <p class="note">她不对劲的时候（不说话、没声音、动画卡住……），存一份诊断信息（文本文件）发给帮你看问题的人。里面有版本、系统、显示器、各项设置和出错记录，不含 API Key、人格、记忆和聊天内容，用户名也会换掉。</p>
+    <details class="lic">
+      <summary>开源组件与许可</summary>
+      <p class="note">桌宠的代码按 MIT 授权，Edge 语音模块（voice/edge-tts.js）按 LGPL-3.0 授权。用到的开源组件和许可全文如下，点开才会读取。</p>
+      <details class="lic" data-src="../THIRD_PARTY_NOTICES.md"><summary>第三方组件与服务</summary><pre></pre></details>
+      <details class="lic" data-src="../LICENSE"><summary>本程序：MIT</summary><pre></pre></details>
+      <details class="lic" data-src="../LICENSES/Apache-2.0.txt"><summary>Apache-2.0（离线语音引擎 sherpa-onnx、Kokoro 模型）</summary><pre></pre></details>
+      <details class="lic" data-src="../LICENSES/LGPL-3.0.txt"><summary>LGPL-3.0（Edge 语音模块）</summary><pre></pre></details>
+      <details class="lic" data-src="../LICENSES/GPL-3.0.txt"><summary>GPL-3.0（espeak-ng：编译在离线语音运行库里，数据随模型下载；LGPL-3.0 也以它为基础）</summary><pre></pre></details>
+      <details class="lic" data-src="../LICENSES/ONNXRuntime-MIT.txt"><summary>MIT（ONNX Runtime 推理库）</summary><pre></pre></details>
+      <details class="lic" data-src="../LICENSES/ONNXRuntime-ThirdPartyNotices.txt"><summary>ONNX Runtime 包含的第三方组件</summary><pre></pre></details>
+      <details class="lic" data-src="../LICENSES/piper-phonemize-MIT.txt"><summary>MIT（piper-phonemize 注音模块）</summary><pre></pre></details>
+    </details>
   </div>
 
   <div class="actions">

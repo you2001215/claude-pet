@@ -17,14 +17,21 @@ let lastError = null;
 let meta = null;          // bundled knowledge file
 let memes = [];           // 大肥鱼 meme pictures bundled from dsh-pet: [{ name, desc }]
 let manifest = null;      // site manifest (file names + hashes)
+let manifestAt = 0;       // when it was fetched (the saved file's mtime after a restart)
 let manifestTried = 0;
+let refreshing = null;
+const MANIFEST_MAX_AGE = 24 * 3600 * 1000;
 let dir;
 
 function init() {
   dir = path.join(app.getPath('userData'), 'stickers');
   fs.mkdirSync(path.join(dir, 'gif'), { recursive: true });
   try { meta = JSON.parse(fs.readFileSync(path.join(__dirname, 'assets', 'stickers', 'nekowhale.json'), 'utf8')); } catch (_) { meta = { stickers: [], emotions: [] }; }
-  try { manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')); } catch (_) {}
+  try {
+    const f = path.join(dir, 'manifest.json');
+    manifest = JSON.parse(fs.readFileSync(f, 'utf8'));
+    manifestAt = fs.statSync(f).mtimeMs;
+  } catch (_) {}
   try { memes = JSON.parse(fs.readFileSync(path.join(__dirname, 'assets', 'memes', 'memes.json'), 'utf8')).memes || []; } catch (_) { memes = []; }
 }
 const squash = (x) => String(x).replace(/[\s，,。.!！?？～~]/g, '').toLowerCase();
@@ -123,13 +130,15 @@ async function download(url) {
   throw new Error(errors.join('；'));
 }
 
-function logError(id, e) {
-  lastError = { time: new Date().toISOString(), id, message: String(e && e.message || e) };
+// quiet: only write the log (a failed background refresh is not shown as a sticker error)
+function logError(id, e, quiet) {
+  const err = { time: new Date().toISOString(), id, message: String(e && e.message || e) };
+  if (!quiet) lastError = err;
   try {
     const f = path.join(dir, 'error.log');
     let old = '';
     try { old = fs.readFileSync(f, 'utf8').split('\n').slice(-50).join('\n'); } catch (_) {}
-    fs.writeFileSync(f, old + `${lastError.time} ${id} ${lastError.message}\n`);
+    fs.writeFileSync(f, old + `${err.time} ${id} ${err.message}\n`);
   } catch (_) {}
 }
 
@@ -142,20 +151,34 @@ async function fetchJson(url) {
   return JSON.parse((await download(url)).toString('utf8'));
 }
 
-async function ensureManifest() {
-  if (manifest || Date.now() - manifestTried < 10 * 60 * 1000) return manifest;
-  manifestTried = Date.now();
+async function fetchManifest(quiet) {
   for (const src of ['/api/kit/nekowhale', '/api/manifest']) {
     try {
       const m = await fetchJson(SITE + src);
       if (m && Array.isArray(m.items)) {
         manifest = m;
-        fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(m));
+        manifestAt = Date.now();
+        try { fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(m)); } catch (e) { logError('manifest-save', e, true); }
         return manifest;
       }
-    } catch (e) { logError('manifest' + src, e); }
+    } catch (e) { logError('manifest' + src, e, quiet); }
   }
   return manifest;
+}
+
+// a cached manifest is used straight away; once it is a day old a fresh copy is fetched in the background
+async function ensureManifest() {
+  const now = Date.now();
+  if (manifest) {
+    if (now - manifestAt > MANIFEST_MAX_AGE && !refreshing && now - manifestTried >= 10 * 60 * 1000) {
+      manifestTried = now;
+      refreshing = fetchManifest(true).catch(() => {}).finally(() => { refreshing = null; });
+    }
+    return manifest;
+  }
+  if (now - manifestTried < 10 * 60 * 1000) return manifest;
+  manifestTried = now;
+  return fetchManifest(false);
 }
 
 function gifUrlFor(id) {
@@ -219,7 +242,7 @@ async function selfTest() {
 function status() {
   let cached = 0;
   try { cached = fs.readdirSync(path.join(dir, 'gif')).filter((f) => f.endsWith('.gif')).length; } catch (_) {}
-  return { cached, manifest: !!manifest, lastError };
+  return { cached, manifest: !!manifest, manifestAt: manifestAt ? new Date(manifestAt).toISOString() : '', lastError };
 }
 
 module.exports = { init, selfTest, status, parseReply, hidePartial, promptHint, file, attribution, pick: (r, p) => { const s = pick(r, p); return s ? toRef(s) : null; } };

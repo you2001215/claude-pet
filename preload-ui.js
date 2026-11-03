@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('ui', {
   balance: () => ipcRenderer.invoke('ai:balance'),
   deleteReminder: (id) => ipcRenderer.invoke('reminders:delete', id),
   stickerStatus: () => ipcRenderer.invoke('stickers:status'),
+  exportDiagnostics: () => ipcRenderer.invoke('diag:export'),
   // voice
   voiceGet: () => ipcRenderer.invoke('voice:get'),
   voiceSet: (s) => ipcRenderer.invoke('voice:set', s),

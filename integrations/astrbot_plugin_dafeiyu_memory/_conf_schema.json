@@ -11,6 +11,12 @@
     "hint": "填你自己聊天账号的 ID（QQ 号等）。只有这些账号私聊时，才会用上和记下记忆、同步聊天记录、算作见过面；群聊和别人私聊只用人格，不提也不记你的私事。",
     "default": []
   },
+  "timezone": {
+    "description": "时区",
+    "type": "string",
+    "hint": "用来算「今天」、连续见面天数和记忆、聊天上的时间。填和桌宠那台电脑一样的时区，国内就是 Asia/Shanghai；AstrBot 跑在国外服务器上时尤其要填对。",
+    "default": "Asia/Shanghai"
+  },
   "platform_hint": {
     "description": "在聊天软件里额外告诉她的话",
     "type": "text",
