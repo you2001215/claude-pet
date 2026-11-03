@@ -1104,7 +1104,7 @@
     get pos() { return { ...pos }; },
     setState: (s, d) => setState(s, d), walk: (d) => { dir = d; setState('walk', 30); },
     look: (d) => { lookDir = d; setState('look', 30); },
-    sleep: () => goSleep(), wake: () => wake(), click: () => onClick(), pat: () => onPat(), say,
+    sleep: () => goSleep(), wake: () => wake(), click: () => onClick(), pat: () => { patTimes = [now()]; onPat(); }, say,   // a real pat stroke records its time; without it the pat state ends on the next frame
     get clip() { return maid ? C.current() : ''; }, act: (c) => setAct('act', c), get maid() { return maid; },
     line: (c) => { setAct('act', c); clipLine(c); }, whisperNow: () => idleWhisper(), get bubble() { return bubbleEl.classList.contains('hidden') ? '' : bubbleText.textContent; },
     get whisperMode() { return whisperMode; },

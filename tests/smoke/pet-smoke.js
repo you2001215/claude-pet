@@ -95,6 +95,9 @@ module.exports = async (getWin) => {
     if (await ev('window.__pet && window.__pet.maid')) { P.setOutfit('claude'); await sleep(1500); }
     // on the ground before poking her (she may still be dropping in)
     await until(async () => { const s = await pet(); return s && !['fall', 'drag'].includes(s.state); }, 8000);
+    // the start-up greeting (a wave about 0.6 s after boot) must be over, or it can replace the first reactions
+    await sleep(1500);
+    await until(async () => { const s = await pet(); return s && s.state !== 'wave'; }, 10000);
 
     await check('Claude 装视频能解码', async () => {
       const r = await until(() => ev(`(() => { try {
