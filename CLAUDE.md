@@ -26,6 +26,7 @@
   - 文件用 SendUserFile 直接发到对话里（display 用 render）；
   - 仓库里的文件再附一个 GitHub 链接（工作分支上的地址，中文路径要 URL 编码）；
   - 安装包给 Actions 产物的直接下载链接（`https://github.com/you2001215/claude-pet/actions/runs/<运行号>/artifacts/<产物号>`）。
+- **汇报按优先级一条一条来，不要把所有内容一次堆给她**：P0 底层架构（记忆、心情、连接，不做完链路不成立）→ P1 她和 AstrBot 那边明确提出的核心需求 → P2 影响体验的功能 → P3 同类都有的功能 → P4 附加功能 → P5 锦上添花或费时不讨好。先把需求理解清楚、复述给她确认，再问拍板的事。当前按这个分好的待办在 `工作档案.md` 总览里。
 - API Key 在桌宠的「AI 设置」里填，用 safeStorage 加密存在本机。不要让她把 Key 贴到对话里。
 - 推送到 GitHub、发 Release 之前先问她。
 - 提交作者用 GitHub 隐私邮箱，不要暴露她的真实邮箱。提交前检查 `git config user.email`，应该是 `97092676+you2001215@users.noreply.github.com`，用户名 `you2001215`。
