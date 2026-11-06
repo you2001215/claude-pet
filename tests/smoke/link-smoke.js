@@ -135,8 +135,9 @@ module.exports = async (getWin) => {
     await check('阿鲸发来的到点提醒和表情包会显示，并回执', async () => {
       const acks0 = fake.acks.length;
       fake.push('cmd.say', { source: 'reminder', parts: [{ text: '3 点啦，去开会咯' }], expires_at: Date.now() + 60000 });
-      const png = fs.readFileSync(path.join(__dirname, '..', '..', 'assets', 'pet', 'angry.png'));
-      fake.push('cmd.say', { source: 'sticker', parts: [{ image: { mime: 'image/png', sha256: crypto.createHash('sha256').update(png).digest('hex'), size: png.length, data: png.toString('base64') } }], expires_at: Date.now() + 120000 });
+      // a WebP, as her side sends (big stickers are shrunk to WebP there)
+      const png = fs.readFileSync(path.join(__dirname, '..', '..', 'assets', 'memes', '哦鲸鲸.webp'));
+      fake.push('cmd.say', { source: 'sticker', parts: [{ image: { mime: 'image/webp', sha256: crypto.createHash('sha256').update(png).digest('hex'), size: png.length, data: png.toString('base64') } }], expires_at: Date.now() + 120000 });
       fake.push('cmd.say', { source: 'reminder', parts: [{ text: '过期的提醒' }], expires_at: Date.now() - 1000 });
       await until(() => fake.acks.length >= acks0 + 3, 5000);
       const text = await until(() => cw.webContents.executeJavaScript(`(() => { const t = document.getElementById('log').innerText; return t.includes('3 点啦') ? t : ''; })()`), 5000);
