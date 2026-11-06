@@ -38,6 +38,7 @@
       "store.js",
       "stickers.js",
       "reminders.js",
+      "link/**/*",
       "preload.js",
       "preload-ui.js",
       "voice/**/*",
