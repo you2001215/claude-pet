@@ -318,8 +318,9 @@ class LinkClient extends EventEmitter {
   }
 
   // ---- sleep / meal questions, counted with the QQ side (spec 10)
-  // her side keeps the count for both sides; a state covers every question asked before it was sent (its ts),
-  // so only the pet's own questions after that are added on top
+  // her side keeps the count for both sides; a state covers every question it had received when it was made (its
+  // ts), so the pet's own questions after that are added on top, and so are any still waiting in the outbox (asked
+  // while she was away: the state she pushes on connecting is newer than they are but doesn't have them yet)
   _careState(d, at) {
     if (d.action !== 'state' || !d.kind || !d.slot) return;
     this.state.care[`${d.kind}|${d.slot}`] = {
@@ -332,9 +333,10 @@ class LinkClient extends EventEmitter {
     if (!slot) return false;
     const key = `${kind}|${slot}`;
     const st = this.state.care[key], mine = this.state.careLocal[key] || {};
-    const asks = Array.isArray(mine.asks) ? mine.asks : [];
+    const asks = (Array.isArray(mine.asks) ? mine.asks : []).map((a) => (typeof a === 'number' ? { t: a } : a));
     if (mine.answered || mine.stopped || (st && (st.answered || st.stopped))) return false;
-    const asked = st ? st.asked_qq + st.asked_desktop + asks.filter((t) => t >= st.at).length : asks.length;
+    const unsent = new Set(this.state.outbox.map((e) => e.f.id));
+    const asked = st ? st.asked_qq + st.asked_desktop + asks.filter((a) => a.t >= st.at || unsent.has(a.id)).length : asks.length;
     return asked < ((st && st.limit) || P.CARE_LIMIT[kind] || 1);
   }
   care(kind, slot, action) {
@@ -342,10 +344,11 @@ class LinkClient extends EventEmitter {
     const key = `${kind}|${slot}`;
     const mine = this.state.careLocal[key] || (this.state.careLocal[key] = {});
     if (!Array.isArray(mine.asks)) mine.asks = [];
-    if (action === 'asked') mine.asks.push(Date.now());
+    const f = P.frame('event.care', { kind, slot, action, side: 'desktop' }, P.newId('c'));
+    if (action === 'asked') mine.asks.push({ t: Date.now(), id: f.id });
     if (action === 'answered') mine.answered = true;
     if (action === 'stop') mine.stopped = true;
-    this._queue(P.frame('event.care', { kind, slot, action, side: 'desktop' }, P.newId('c')));
+    this._queue(f);
   }
 }
 

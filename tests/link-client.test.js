@@ -382,3 +382,23 @@ test('a care state already counting a desktop question: one more from here makes
     c.stop();
   } finally { await fake.close(); }
 });
+
+test('a question asked while she was away still counts after reconnecting, before her new state arrives', async () => {
+  const fake = await new FakeAdapter().start();
+  try {
+    const c = await paired(fake);
+    const slot = '2026-11-06/night';
+    c.stop();
+    fake.ackOn = false;                       // her side hasn't taken the offline question in yet
+    c.care('sleep', slot, 'asked');           // asked while away
+    c.start();
+    await until(() => c.online, 2000, 'online');
+    await sleep(5);
+    // the state she pushes on connecting is newer than the question but doesn't count it
+    fake.ackOn = true;
+    fake.push('event.care', { kind: 'sleep', slot, action: 'state', asked_qq: 1, asked_desktop: 0, answered: false, stopped: false, limit: 2 });
+    await until(() => fake.acks.length >= 1, 2000, 'state');
+    assert.ok(!c.careAllowed('sleep', slot), 'QQ 1 + the offline one = 2: no more');
+    c.stop();
+  } finally { await fake.close(); }
+});
