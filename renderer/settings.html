@@ -39,6 +39,35 @@
     <div class="msgline" id="connMsg"></div>
   </div>
 
+  <div class="card" id="linkCard">
+    <h2>连接阿鲸（AstrBot）</h2>
+    <p class="note">连上以后，桌面上和你说话的就是 QQ 上的阿鲸，记忆和 QQ 那边共用。阿鲸那边连不上的时候，桌宠照常用上面的 DeepSeek 自己和你聊，等她回来再把这段时间聊的交给她。不用 AstrBot 的话不用管这里。</p>
+    <label class="switch"><input type="checkbox" id="linkOn"> 连接阿鲸</label>
+    <div id="linkBody">
+      <div class="row">
+        <label>状态</label>
+        <div id="linkState" class="note"></div>
+      </div>
+      <div class="row" id="linkPairRow">
+        <label>配对码（在 QQ 私聊里给阿鲸发「/桌宠配对」，5 分钟内填进来）</label>
+        <div class="inline"><input id="linkCode" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocomplete="off" spellcheck="false" style="width:120px"><button id="linkPair">配对</button></div>
+      </div>
+      <details>
+        <summary class="note">高级：地址和电脑名字</summary>
+        <div class="row">
+          <label>阿鲸的地址（一般不用改）</label>
+          <input id="linkUrl" spellcheck="false">
+        </div>
+        <div class="row">
+          <label>这台电脑叫什么（在 QQ 里「/桌宠设备」会列出来）</label>
+          <input id="linkName" maxlength="32" spellcheck="false">
+        </div>
+        <div class="inline"><button class="ghost" id="linkSave">保存地址和名字</button><button class="ghost" id="linkUnpair">取消配对</button></div>
+      </details>
+      <div class="msgline" id="linkMsg"></div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>人格和记忆存在哪</h2>
     <div class="row">
@@ -234,5 +263,6 @@
 </div>
 <script src="settings.js"></script>
 <script src="settings-voice.js"></script>
+<script src="settings-link.js"></script>
 </body>
 </html>

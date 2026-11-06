@@ -15,6 +15,7 @@
     input.focus();
   });
   let live = null;
+  let voiceText = '';   // what speech recognition put in the box: sent as-is, it is marked as spoken (may have typos)
 
   function addStickers(el, list) {
     for (const st of list || []) {
@@ -41,7 +42,9 @@
 
   async function refreshHint() {
     const s = await U.getSettings();
-    if (!s.hasKey) {
+    let linked = false;
+    try { linked = (await U.linkGet()).status === 'online'; } catch (_) {}
+    if (!s.hasKey && !linked) {
       add('hint', '大肥鱼还没连上 AI。点右上角「设置」，从 DeepSeek Harness 导入 key，或者直接粘贴 DeepSeek 的 API Key。');
     }
   }
@@ -77,7 +80,8 @@
     live = add('assistant', '');
     live.classList.add('typing');
     status.textContent = '正在想…';
-    const r = await U.send(text, withScreen);
+    const r = await U.send(text, withScreen, voiceText && text === voiceText ? 'voice' : 'text');
+    voiceText = '';
     withScreen = false; shotBtn.classList.remove('on'); input.placeholder = '和她说点什么…（Enter 发送，输入「余额」查 API 余额）';
     live.classList.remove('typing');
     if (r.ok) {
@@ -95,6 +99,8 @@
       if (dr.refused > 0) notes.push('她想取消提醒，但你没说要取消，所以没动');
       if (dr.memories > 0) notes.push('有几条太长或太多的记忆没存');
       if (r.truncated) notes.push('网络断了一下，后面的话没说完');
+      if (r.merged) notes.push('她把这句和上一句一起回了');
+      if (r.standIn) notes.push(r.standIn.replace(/^（|）$/g, ''));
       for (const n of notes) {
         const s = document.createElement('span'); s.className = 'mem';
         s.textContent = '（' + n + '）';
@@ -165,6 +171,7 @@
       if (!r.ok) { add('hint', r.error); status.textContent = '在你桌面上待着'; return; }
       const vs = await U.voiceGet();
       input.value = (input.value.trim() ? input.value.trim() + ' ' : '') + r.text;
+      voiceText = input.value.trim();
       status.textContent = '在你桌面上待着';
       if (vs.autoSend) send(); else input.focus();
     } finally { micBusy = false; micBtn.classList.remove('busy'); }

@@ -41,6 +41,7 @@ npm install
 npm start        # prestart 会先跑 scripts/fetch-sherpa.js，下载离线语音引擎到 vendor/（约 90 MB，不进 git）
 npm test         # 单元测试（node:test，tests/*.test.js）
 npm run test:smoke   # 启动测试：临时空数据目录 + PET_TEST=tests/smoke/pet-smoke.js，Linux 无屏幕时自动套 xvfb-run
+npm run test:smoke:link   # 连接阿鲸的启动测试：同上，脚本是 tests/smoke/link-smoke.js，连的是假阿鲸（PET_SMOKE_SHOTS=<文件夹> 会存截图）
 ```
 
 - **单实例锁：** 程序有单实例锁，而且开发版和安装版共用同一个用户数据目录。已经装好的桌宠在运行时，`npm start` 会直接退出。先在托盘图标里点「退出」。
@@ -76,6 +77,7 @@ npm run test:smoke   # 启动测试：临时空数据目录 + PET_TEST=tests/smo
 | `ai.js` | 调 DeepSeek（OpenAI 兼容接口）：人设、记忆、主动搭话、碎碎念 `whisper()`、余额查询 |
 | `store.js` | 安全读写 JSON：先写临时文件（`<文件>.<进程号>-<随机>.tmp`，两个写入方不会撞名）再改名替换，留 `.bak`；读坏的文件改名成 `.broken-日期-时间` 保留，再用 `.bak`；启动时被占用读不出来的文件，之后保存前先另存一份，还读不出来就不覆盖。共享文件夹用异步版（不留 `.bak`，解析出错的消息里不带文件内容）。不依赖 electron |
 | `ai-parse.js` | AI 回复里的控制标记：`visible()` 隐藏 `<memory>`/`<remind>`/`<remind-cancel>`/`<think>`，`parseControl()` 读出来并限量（`LIMITS`），`allowCancel()` 只有用户自己说要取消/改时间才放行取消。不依赖 electron |
+| `link/` | 桌宠 ↔ AstrBot（阿鲸）的桌面连接，照 `docs/桌面连接接口说明.md`：`protocol.js` 消息格式和地址检查，`client.js` 连接、配对、回执和发件箱、重连（不依赖 electron），`index.js` 开关、设备令牌（加密）、快照、图片，`lines.js` 连着时用的固定台词。默认关着。连着时 `main.js` 的聊天走阿鲸，桌宠自己的 AI 不主动开口 |
 | `reminders.js` | 定时提醒的存取和触发（`parseLocal`、`matches` 可单独测试；electron 只在 `init()` 里加载） |
 | `stickers.js` | 表情包和梗图：`[sticker:名]` 标记、下载缓存、写进提示词里的清单 |
 | `voice/index.js` | 语音总控：设置、Edge → Kokoro → 系统语音的降级顺序 |
@@ -92,7 +94,8 @@ npm run test:smoke   # 启动测试：临时空数据目录 + PET_TEST=tests/smo
 | `tools/process_clip.py` | 绿幕视频 → 透明 VP9 webm，按第一帧对齐 |
 | `scripts/fetch-sherpa.js` | 下载 sherpa-onnx 原生运行库到 `vendor/sherpa`，解压前核对写死的 sha512（`INTEGRITY`），旁边留 `<包名>.integrity` 标记 |
 | `scripts/smoke-test.js`、`tests/smoke/pet-smoke.js` | 启动测试：前者负责开程序、等结果、打印汇总；后者在程序里面点一遍 |
-| `tests/*.test.js` | 单元测试（node:test，不需要 electron）：ai-parse、store、reminders、voice/text |
+| `tests/*.test.js` | 单元测试（node:test，不需要 electron）：ai-parse、store、reminders、voice/text、link-client、link-store |
+| `tests/link/fake-adapter.js` | 假阿鲸：照接口说明写的 AstrBot 桌面适配器替身，只在本机，测试用 |
 | `.github/workflows/build.yml` | GitHub Actions：测试、Windows/Mac 打包、启动 20 秒检查、上传 Artifacts、打标签时传到已有的 Release |
 | `build/afterPack.js` | 打包后处理：Windows 用 resedit 写图标和版本号；在 Linux 上打 Mac 版时，先翻好 Electron fuses 再用 `RCODESIGN` 做 ad-hoc 签名（在 Mac 上由 electron-builder 自己签） |
 

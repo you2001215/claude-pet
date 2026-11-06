@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, protocol, net, powerMonitor, shell, Notification, desktopCapturer, systemPreferences, dialog, session } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, protocol, net, powerMonitor, shell, Notification, desktopCapturer, systemPreferences, dialog, session, safeStorage } = require('electron');
 // an installed copy ignores the hooks that load a test script or point Edge voice / stickers at another server
 // (read when the modules below load, so this has to come first)
 if (app.isPackaged) for (const k of ['PET_TEST', 'PET_EDGE_WSS', 'PET_STICKER_SITE']) delete process.env[k];
@@ -14,6 +14,10 @@ const reminders = require('./reminders');
 const store = require('./store');
 const voice = require('./voice');
 const voiceHost = require('./voice/engine-host');
+// the desktop link to AstrBot (「阿鲸」), off until the user turns it on and pairs: docs/桌面连接接口说明.md
+const link = require('./link');
+const linkLines = require('./link/lines');
+const linkProto = require('./link/protocol');
 
 // serve the UI from app://pet/... so canvas pixels stay same-origin (needed for click-through hit tests)
 protocol.registerSchemesAsPrivileged([
@@ -56,6 +60,11 @@ function registerAppProtocol() {
       } catch (e) {
         return new Response('sticker unavailable', { status: 404 });
       }
+    }
+    if (u.pathname.startsWith('/linkmedia/')) {
+      const f = link.mediaPath(decodeURIComponent(u.pathname.slice('/linkmedia/'.length)));
+      if (!f) return new Response('forbidden', { status: 403 });
+      try { return new Response(await fs.promises.readFile(f), { status: 200, headers: { 'Content-Type': MIME[path.extname(f).toLowerCase()] || 'application/octet-stream' } }); } catch (_) { return new Response('not found', { status: 404 }); }
     }
     const p = path.normalize(path.join(root, decodeURIComponent(u.pathname)));
     if (p !== root && !p.startsWith(root + path.sep)) return new Response('forbidden', { status: 403 });
@@ -379,8 +388,45 @@ function openSettings() {
   settingsWin.on('closed', () => { settingsWin = null; if (chatWin) chatWin.webContents.send('ai:settings-changed'); });
 }
 
-handle('ai:send', async (_e, text, withScreen) => {
+// ---------- chat ----------
+const NO_DROPS = { memories: 0, reminders: 0, cancels: 0, refused: 0 };
+// her reply through AstrBot: shown like the pet's own, kept in the chat history
+async function linkedChat(text, input) {
+  const r = await link.chat(text, input);
+  if (r.kind === 'merged') {
+    // answered together with the message before it: that reply covers this one too
+    await ai.record('user', text);
+    return { ok: true, reply: '', merged: true, stickers: [], remembered: [], remindSet: [], remindFail: [], remindCancelled: [], memoryFull: false, dropped: NO_DROPS, truncated: false, via: 'ajing' };
+  }
+  const { text: reply, stickers: st } = link.toReply(r.data.parts);
+  const emotion = linkProto.emotionOf(r.data.emotion);
+  await ai.record('user', text);
+  if (reply || st.length) await ai.record('assistant', reply || '（发了一个表情）', { via: 'ajing', ...(st.length ? { stickers: st } : {}) });
+  send('ai', { type: 'done', text: reply, stickers: st, remembered: [], remindSet: [], emotion });
+  return { ok: true, reply, stickers: st, remembered: [], remindSet: [], remindFail: [], remindCancelled: [], memoryFull: false, dropped: NO_DROPS, truncated: false, via: 'ajing' };
+}
+// the pet answered for her (she didn't reply in time, or her side failed): say so, and tell her what was said
+const STAND_IN = '（阿鲸刚才没接上，这句是我自己说的）';
+
+handle('ai:send', async (_e, text, withScreen, input) => {
   pro.lastUserChat = Date.now();
+  careHeard(String(text || ''));
+  input = input === 'voice' ? 'voice' : 'text';
+  let standInFor = '';
+  if (link.online() && !withScreen) {
+    send('ai', { type: 'thinking' });
+    try {
+      const r = await linkedChat(String(text || '').slice(0, 4000), input);
+      pro.lastUserChat = Date.now();
+      return r;
+    } catch (e) {
+      if (!e.retry && e.code !== 'offline') {
+        send('ai', { type: 'error', code: e.code || '', text: '阿鲸那边没收下这句话' });
+        return { ok: false, error: '阿鲸那边没收下这句话（' + (e.code || '出错了') + '）', code: e.code || '' };
+      }
+      standInFor = e.code === 'offline' ? '' : e.id;   // offline in between: handled below like any offline chat
+    }
+  }
   send('ai', { type: 'thinking' });
   try {
     let image = null;
@@ -401,7 +447,11 @@ handle('ai:send', async (_e, text, withScreen) => {
     if (remindSet.length || remindCancelled.length) refreshTray();
     send('ai', { type: 'done', text: r.reply, remembered: r.remembered, stickers: r.stickers, remindSet });
     pro.lastUserChat = Date.now();
+    // connected to 阿鲸: what was said here goes to her too (only the pet's line when it stood in for her reply)
+    if (standInFor) link.offline([{ role: 'pet', text: r.reply, reply_to: standInFor }]);
+    else if (link.linked()) link.offline([{ role: 'user', text: String(text || '').slice(0, 4000), input }, { role: 'pet', text: r.reply }]);
     return {
+      standIn: standInFor ? STAND_IN : '',
       ok: true, reply: r.reply, remembered: r.remembered, stickers: r.stickers, remindSet, remindFail, remindCancelled,
       memoryFull: !!r.memoryFull, dropped: r.dropped || { memories: 0, reminders: 0, cancels: 0, refused: 0 }, truncated: !!r.truncated,
     };
@@ -468,14 +518,35 @@ on('ai:greet', async () => { if (greeted) return; greeted = true; speakUp('start
 const pro = {
   lastSaid: 0, lastUserChat: 0, away: false, awayStart: 0,
   restAnchor: Date.now(), nightKey: '', nextChatAt: 0, busy: false,
+  nightAskAt: 0, careAsk: null,     // connected to 阿鲸: the last sleep question, to tell her when it was answered
 };
+// a chat within 15 minutes of the sleep question answers it (or asks her to stop, counted with QQ)
+function careHeard(text) {
+  const c = pro.careAsk;
+  if (!c || Date.now() - c.at > 15 * 60000) return;
+  pro.careAsk = null;
+  link.care(c.kind, c.slot, /别管|不用管|别催|别问了|不要管|别操心/.test(text) ? 'stop' : 'answered');
+}
 const CHAT_GAP = { hourly: [50, 75], often: [18, 26] };
 function planNextChat() {
   const g = CHAT_GAP[ai.proactiveMode()];
   pro.nextChatAt = g ? Date.now() + (g[0] + Math.random() * (g[1] - g[0])) * 60000 : Infinity;
 }
+// connected to 阿鲸: no AI lines of the pet's own (small talk and "welcome back" wait for her, phase 3)
+async function speakFixed(kind) {
+  const text = linkLines.line(kind);
+  if (!text) return false;
+  pro.lastSaid = Date.now();
+  if (kind !== 'chat') pro.nextChatAt = Math.max(pro.nextChatAt, Date.now() + 15 * 60000);
+  send('ai', { type: 'proactive', kind, text, stickers: [] });
+  if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', { text, stickers: [] });
+  await ai.record('assistant', text, { proactive: kind, fixed: true });
+  return true;
+}
 async function speakUp(kind, ctx) {
-  if (pro.busy || !ai.hasKey() || ai.proactiveMode() === 'off') return false;
+  if (pro.busy || ai.proactiveMode() === 'off') return false;
+  if (link.online()) return speakFixed(kind);
+  if (!ai.hasKey()) return false;
   pro.busy = true;
   pro.lastSaid = Date.now();
   // only small talk sets the next small talk; a greeting, a rest or night nudge just keeps it 15+ minutes away
@@ -485,6 +556,7 @@ async function speakUp(kind, ctx) {
     const r = await ai.proactive(kind, ctx);
     send('ai', { type: 'proactive', kind, text: r.text, stickers: r.stickers });
     if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', r);
+    if (link.linked() && r.text) link.offline([{ role: 'pet', text: r.text }]);
     return true;
   } catch (e) {
     logError('proactive:' + kind, e);
@@ -597,6 +669,7 @@ async function lookAndComment(kind, front) {
     const r = await ai.proactive(kind, { image });
     send('ai', { type: 'proactive', kind, text: r.text, stickers: r.stickers });
     if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', r);
+    if (link.linked() && r.text) link.offline([{ role: 'pet', text: r.text }]);
     pro.lastSaid = Date.now();
     if (auto) lookFails = 0;
     return true;
@@ -625,7 +698,7 @@ function mayCaptureScreen() {
 }
 let lookChecking = false, macLookTold = false, lastFront = null;
 async function lookTick() {
-  if (lookChecking || !ai.hasKey() || ai.lookMode() === 'off' || Date.now() < nextLookAt) return;
+  if (lookChecking || !ai.hasKey() || ai.lookMode() === 'off' || Date.now() < nextLookAt || link.online()) return;
   if (powerMonitor.getSystemIdleTime() > 120 || sleeping || pro.busy) return;
   const chatting = Date.now() - pro.lastUserChat < 5 * 60000 || ai.busy() || (chatWin && !chatWin.isDestroyed() && chatWin.isFocused());
   if (chatting || Date.now() - pro.lastSaid < 8 * 60000) return;
@@ -645,6 +718,42 @@ async function lookTick() {
   } finally { lookChecking = false; }
 }
 
+// ---------- what 阿鲸 sends on her own (cmd.say) and replies that came after the pet gave up waiting ----------
+async function linkSay(d) {
+  if (d.expires_at && Date.now() > Number(d.expires_at)) return { ok: false, code: 'expired' };
+  const { text, stickers: st } = link.toReply(d.parts);
+  if (!text && !st.length) return { ok: true };
+  const source = String(d.source || '');
+  if (source === 'reminder') {
+    send('ai', { type: 'reminder', text, stickers: st, task: text });
+    try {
+      if (Notification.isSupported()) {
+        const n = new Notification({ title: '阿鲸提醒你', body: text || '到点啦', silent: false });
+        n.on('click', () => openChat());
+        n.show();
+      }
+    } catch (_) {}
+  } else send('ai', { type: 'proactive', kind: 'link-' + source, text, stickers: st });
+  if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', { text, stickers: st });
+  await ai.record('assistant', text || '（发了一个表情）', { via: 'ajing', source, ...(st.length ? { stickers: st } : {}) });
+  pro.lastSaid = Date.now();
+  return { ok: true };
+}
+async function linkLate(d) {
+  const { text, stickers: st } = link.toReply(d.parts);
+  if (!text && !st.length) return;
+  send('ai', { type: 'proactive', kind: 'link-late', text, stickers: st });
+  if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', { text, stickers: st });
+  await ai.record('assistant', text || '（发了一个表情）', { via: 'ajing', late: true, ...(st.length ? { stickers: st } : {}) });
+}
+// a few recent link events (types, ids, counts only) for the diagnostics report
+const linkLog = [];
+const linkNote = (m) => { linkLog.push(`${new Date().toISOString().slice(11, 19)} ${m}`); if (linkLog.length > 40) linkLog.shift(); };
+handle('link:get', () => link.getConfig());
+handle('link:set', (_e, s) => link.setConfig(s || {}));
+handle('link:pair', (_e, code) => link.pair(code));
+handle('link:unpair', () => link.unpair());
+
 // ---------- reminders the user asked for ----------
 let firing = false;
 async function checkReminders() {
@@ -658,7 +767,7 @@ async function checkReminders() {
 }
 async function fireReminder(r) {
   let text = '', st = [];
-  if (ai.hasKey()) {
+  if (ai.hasKey() && !link.online()) {
     try { const out = await ai.proactive('reminder', { text: r.text, lateMin: r.lateMin }); text = out.text; st = out.stickers; } catch (e) { logError('proactive:reminder', e); }
   }
   if (!text) text = `到点啦！${r.text}` + (r.lateMin > 2 ? `（刚才电脑没开，晚了 ${r.lateMin} 分钟）` : '');
@@ -692,8 +801,15 @@ function proactiveTick() {
   const d = new Date();
   const h = d.getHours(), m = d.getMinutes();
   const nightKey = d.toDateString();
-  if (((h === 0 && m >= 30) || (h >= 1 && h < 4)) && pro.nightKey !== nightKey && now - pro.lastSaid > 20 * 60000) {
-    pro.nightKey = nightKey; speakUp('night'); return;
+  if (((h === 0 && m >= 30) || (h >= 1 && h < 4)) && now - pro.lastSaid > 20 * 60000) {
+    if (link.linked()) {
+      const slot = linkProto.careSlot('sleep');
+      if (link.careAllowed('sleep', slot) && now - pro.nightAskAt > 60 * 60000) {
+        pro.nightAskAt = now;
+        speakUp('night').then((ok) => { if (ok) { link.care('sleep', slot, 'asked'); pro.careAsk = { kind: 'sleep', slot, at: Date.now() }; } });
+        return;
+      }
+    } else if (pro.nightKey !== nightKey) { pro.nightKey = nightKey; speakUp('night'); return; }
   }
   if (now - pro.restAnchor >= 50 * 60000 && now - pro.lastSaid > 10 * 60000) {
     pro.restAnchor = now; speakUp('rest', { activeMin: 50 }); return;
@@ -725,6 +841,7 @@ handle('get-settings', () => ({ size: settings.size, height: SIZES[settings.size
 // a line made up by the model for her muttering; skipped while you are away so it costs nothing
 handle('ai:whisper', async (_e, ctx) => {
   if (powerMonitor.getSystemIdleTime() > 600) return { ok: false, reason: 'away' };
+  if (link.online()) return { ok: false, reason: 'linked' };
   return ai.whisper({ action: String((ctx && ctx.action) || '').slice(0, 40) });
 });
 handle('ui:outfit', () => settings.outfit);
@@ -813,6 +930,10 @@ async function diagnosticsText() {
   else { kv('有 Key', ai.hasKey()); kv('主动搭话', ai.proactiveMode()); kv('看屏幕', ai.lookMode()); }
   kv('下次闲聊', when(pro.nextChatAt));
   kv('下次自动看屏幕', ai.lookMode() === 'off' ? '不会（关着）' : when(nextLookAt));
+
+  sec('连接阿鲸（AstrBot）');
+  block(safe(() => link.diagnostics()));
+  if (linkLog.length) kv('最近的连接记录', '\n' + linkLog.slice(-15).join('\n'));
 
   sec('语音');
   block(safe(() => { const v = voice.publicSettings(); delete v.edgeVoices; return v; }));
@@ -914,6 +1035,12 @@ app.whenReady().then(() => {
   if (typeof ai.setLogger === 'function') ai.setLogger(logError);
   if (typeof reminders.setLogger === 'function') reminders.setLogger(logError);
   ai.init();
+  link.init({
+    userData: app.getPath('userData'), safeStorage, appVersion: app.getVersion(), log: linkNote,
+    onSay: (d) => linkSay(d), onLate: (d) => linkLate(d).catch((e) => logError('link:late', e)),
+    onStatus: () => broadcast('link:status', link.getConfig()),
+  });
+  ai.setLinkMemory(() => link.offlinePrompt());
   // when we met (today first / last time, on which computer) is shared through the memory folder: note this start,
   // and keep noting it every few minutes while the user is at the computer
   startMeet = ai.seen().catch(() => null);
@@ -935,11 +1062,11 @@ app.whenReady().then(() => {
   screen.on('display-metrics-changed', () => send('cmd', 'display-changed'));
   if (process.env.PET_TEST) {
     global.__pet = { speakUp, pro, checkReminders, reminders, lookAndComment, frontApp, captureScreen, voice, openChat, chatWin: () => chatWin, settingsWin: () => settingsWin, openSettings, setOutfit, send, settings: () => settings, stickers, pushSettings, ai,
-      lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu };
+      lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu, link, careHeard };
     require(process.env.PET_TEST)(() => win);
   }
   screen.on('display-removed', () => send('cmd', 'display-changed'));
 });
 
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => ai.abort());
+app.on('before-quit', () => { ai.abort(); link.stop(); });

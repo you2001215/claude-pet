@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('ui', {
   platform: process.platform,
-  send: (text, withScreen) => ipcRenderer.invoke('ai:send', text, !!withScreen),
+  send: (text, withScreen, input) => ipcRenderer.invoke('ai:send', text, !!withScreen, input === 'voice' ? 'voice' : 'text'),
   stop: () => ipcRenderer.send('ai:stop'),
   history: () => ipcRenderer.invoke('ai:history'),
   clear: () => ipcRenderer.invoke('ai:clear'),
@@ -44,4 +44,10 @@ contextBridge.exposeInMainWorld('ui', {
   outfit: () => ipcRenderer.invoke('ui:outfit'),
   setOutfit: (k) => ipcRenderer.send('ui:set-outfit', k),
   onOutfit: (fn) => ipcRenderer.on('ui:outfit', (_e, k) => fn(k)),
+  // the desktop link to AstrBot (「阿鲸」)
+  linkGet: () => ipcRenderer.invoke('link:get'),
+  linkSet: (s) => ipcRenderer.invoke('link:set', s),
+  linkPair: (code) => ipcRenderer.invoke('link:pair', String(code || '')),
+  linkUnpair: () => ipcRenderer.invoke('link:unpair'),
+  onLinkStatus: (fn) => ipcRenderer.on('link:status', (_e, c) => fn(c)),
 });

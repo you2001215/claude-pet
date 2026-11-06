@@ -4,6 +4,7 @@
 // inside it through PET_TEST, waits for its JSON result and prints a summary. Exit code 1 when anything failed.
 //   npm run test:smoke            (Linux without a screen: runs under xvfb-run automatically)
 //   SMOKE_KEEP=1 npm run test:smoke   keeps the temporary folder (result.json, error.log) for a look afterwards
+//   node scripts/smoke-test.js tests/smoke/link-smoke.js   runs another in-app script (npm run test:smoke:link)
 'use strict';
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -22,7 +23,8 @@ if (typeof electron !== 'string' || !fs.existsSync(electron)) { console.error(`e
 const tmp = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'claude-pet-smoke-'));
 const userData = path.join(tmp, 'userData');
 const out = path.join(tmp, `result-${process.pid}-${Date.now()}.json`);
-const env = { ...process.env, PET_TEST: path.join(ROOT, 'tests', 'smoke', 'pet-smoke.js'), PET_SMOKE_OUT: out };
+const script = process.argv[2] ? path.resolve(process.argv[2]) : path.join(ROOT, 'tests', 'smoke', 'pet-smoke.js');
+const env = { ...process.env, PET_TEST: script, PET_SMOKE_OUT: out };
 delete env.ELECTRON_RUN_AS_NODE;
 // --user-data-dir is what actually moves the data folder on every system; the variables are a second fence
 if (isLinux) env.XDG_CONFIG_HOME = path.join(tmp, 'config');
@@ -69,7 +71,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     process.exit(1);
   }
   const mark = (ok) => (ok === null ? '-' : ok ? '✔' : '✘');
-  console.log(`\n大肥鱼启动测试  ${r.version}  ${r.platform}  Electron ${r.electron}`);
+  console.log(`\n大肥鱼启动测试（${path.basename(script)}）  ${r.version}  ${r.platform}  Electron ${r.electron}`);
   for (const c of r.checks) console.log(`  ${mark(c.ok)} ${c.name}${c.detail ? `  ${c.detail}` : ''}`);
   console.log(`  ${mark(!r.consoleErrors.length)} 渲染进程没有报错${r.consoleErrors.length ? '：' : ''}`);
   for (const m of r.consoleErrors) console.log(`      ${m}`);

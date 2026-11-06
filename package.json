@@ -20,6 +20,7 @@
     "prestart": "node scripts/fetch-sherpa.js",
     "test": "node --test \"tests/**/*.test.js\"",
     "test:smoke": "node scripts/smoke-test.js",
+    "test:smoke:link": "node scripts/smoke-test.js tests/smoke/link-smoke.js",
     "dist:win": "node scripts/fetch-sherpa.js win --verify && electron-builder --win",
     "dist:mac": "node scripts/fetch-sherpa.js mac --verify && electron-builder --mac"
   },

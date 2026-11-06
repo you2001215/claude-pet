@@ -85,6 +85,33 @@ const paired = () => !!(cfg.token && cfg.token.blob);
 const online = () => !!(cfg.enabled && client && client.online);
 // on and paired but she can't be reached right now: the pet talks with its own brain and keeps notes for her
 const away = () => !!(cfg.enabled && paired() && client && !client.online);
+// on and paired, reachable or not: what the pet says and does is kept for her
+const linked = () => !!(cfg.enabled && paired());
+
+// the snapshot as a block of the pet's own system prompt, only while she can't be reached
+const p2 = (n) => String(n).padStart(2, '0');
+function when(t) {
+  const d = new Date(Number(t) || 0), today = new Date().toDateString() === d.toDateString();
+  return `${today ? '' : `${d.getMonth() + 1}-${d.getDate()} `}${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
+function offlinePrompt() {
+  if (!away() || !snapshot) return '';
+  const cut = (x, n) => String(x || '').slice(0, n);
+  const list = (a, n) => (Array.isArray(a) ? a.slice(-n) : []);
+  const out = [`（阿鲸那边现在连不上，你在用备份记忆和用户说话，备份是 ${when(snapshot.made_at)} 的。想不起来的事就照实说想不起来，别编。）`];
+  if (snapshot.profile) out.push('关于用户：\n' + cut(snapshot.profile, 2000));
+  if (snapshot.impression) out.push('你对用户的印象：\n' + cut(snapshot.impression, 1500));
+  const diary = list(snapshot.diary, 7), weekly = list(snapshot.weekly, 3), hobbies = list(snapshot.hobbies, 8), recent = list(snapshot.recent, 60);
+  if (diary.length) out.push('最近的日记：\n' + diary.map((d) => `${cut(d.date, 10)}：${cut(d.text, 600)}`).join('\n'));
+  if (weekly.length) out.push('周记：\n' + weekly.map((w) => `${cut(w.week, 10)}：${cut(w.text, 900)}`).join('\n'));
+  if (hobbies.length) out.push('你在追的东西：\n' + hobbies.map((h) => `${cut(h.name, 30)}：${cut(h.text, 400)}`).join('\n'));
+  if (snapshot.mood && snapshot.mood.name) out.push(`你这一阵的心情：${cut(snapshot.mood.name, 4)}${snapshot.mood.line ? '，' + cut(snapshot.mood.line, 100) : ''}`);
+  if (recent.length) {
+    const who = (r) => (r.who === 'user' ? '用户' : r.who === 'pet' ? '桌宠' : '你');
+    out.push('最近 24 小时说过的话：\n' + recent.map((r) => `[${when(r.ts)} ${r.side === 'qq' ? '聊天软件里' : '桌面上'} ${who(r)}] ${cut(r.text, 100)}`).join('\n'));
+  }
+  return out.join('\n\n').slice(0, 14000);
+}
 
 function getConfig() {
   return {
@@ -190,10 +217,10 @@ function diagnostics() {
 }
 
 module.exports = {
-  init, getConfig, setConfig, pair, unpair, paired, online, away, getSnapshot, toReply, mediaPath, diagnostics,
+  init, getConfig, setConfig, pair, unpair, paired, online, away, linked, offlinePrompt, getSnapshot, toReply, mediaPath, diagnostics,
   chat: (text, input) => client.chat(text, input),
-  offline: (items) => { if (cfg.enabled && paired() && client) client.offline(items); },
+  offline: (items) => { if (linked() && client) client.offline(items); },
   careAllowed: (kind, slot) => !!client && client.careAllowed(kind, slot),
-  care: (kind, slot, action) => { if (cfg.enabled && paired() && client) client.care(kind, slot, action); },
+  care: (kind, slot, action) => { if (linked() && client) client.care(kind, slot, action); },
   stop: () => { if (client) client.stop(); },
 };

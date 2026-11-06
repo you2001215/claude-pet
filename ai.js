@@ -631,7 +631,20 @@ function systemPrompt() {
     '用户要改提醒的时间时，先写 <remind-cancel>旧提醒里的关键词</remind-cancel>，再写新的 <remind at="...">。',
   ].join('\n'));
   if (cfg.stickers !== 'off') parts.push(stickers.promptHint(cfg.stickers, cfg.memes));
+  // connected to AstrBot but it can't be reached right now: what she last knew, from the snapshot (link/index.js)
+  const lm = linkMemory ? linkMemory() : '';
+  if (lm) parts.push(lm);
   return parts.join('\n\n');
+}
+let linkMemory = null;
+function setLinkMemory(fn) { linkMemory = typeof fn === 'function' ? fn : null; }
+
+// a turn that happened elsewhere (her reply through AstrBot, a fixed line): kept in the chat history like any other
+async function record(role, content, extra = {}) {
+  if (!content) return;
+  chat.messages.push(newMsg(role === 'user' ? 'user' : 'assistant', String(content), extra));
+  saveChat();
+  await pushChat();
 }
 
 let controller = null;
@@ -951,5 +964,5 @@ function diagnostics() {
 module.exports = {
   init, publicSettings, updateSettings, importFromDsh, send, abort, test, listModels, history, clearHistory, proactive, balance, setOutfit, seen,
   hasKey: () => !!getKey(), busy: () => !!controller, proactiveMode: () => cfg.proactive, lookMode: () => cfg.look,
-  whisper, whisperMode: () => cfg.whisper, setLogger, diagnostics, redact,
+  whisper, whisperMode: () => cfg.whisper, setLogger, diagnostics, redact, record, setLinkMemory,
 };
