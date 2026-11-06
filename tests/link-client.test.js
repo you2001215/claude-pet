@@ -361,3 +361,24 @@ test('the log never gets chat text, the token or the pairing code', async () => 
     assert.ok(!all.includes('香菜') && !all.includes(code) && !all.includes(box.token), all);
   } finally { await fake.close(); }
 });
+
+test('a care state already counting a desktop question: one more from here makes 2 of 2', async () => {
+  const fake = await new FakeAdapter().start();
+  try {
+    const c = await paired(fake);
+    const slot = '2026-11-06/night';
+    // asked on another computer (or before a restart): her side says desktop 1
+    fake.push('event.care', { kind: 'sleep', slot, action: 'state', asked_qq: 0, asked_desktop: 1, answered: false, stopped: false, limit: 2 });
+    await until(() => fake.acks.length === 1, 2000, 'state');
+    assert.ok(c.careAllowed('sleep', slot));
+    await sleep(5);
+    c.care('sleep', slot, 'asked');
+    assert.ok(!c.careAllowed('sleep', slot), '1 + this one = 2');
+    // her answer to that question comes back as a state that includes it: still 2, not 3
+    await sleep(5);
+    fake.push('event.care', { kind: 'sleep', slot, action: 'state', asked_qq: 0, asked_desktop: 2, answered: false, stopped: false, limit: 2 });
+    await until(() => fake.acks.length === 2, 2000, 'second state');
+    assert.ok(!c.careAllowed('sleep', slot));
+    c.stop();
+  } finally { await fake.close(); }
+});

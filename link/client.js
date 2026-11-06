@@ -192,7 +192,7 @@ class LinkClient extends EventEmitter {
       case 'chat.error': return this._error(d);
       case 'cmd.say': return this._incoming(f, () => this.onSay(d, f));
       case 'snapshot.data': return this._incoming(f, async () => { await this.onSnapshot(d, f); return { ok: true }; });
-      case 'event.care': return this._incoming(f, async () => { this._careState(d); return { ok: true }; });
+      case 'event.care': return this._incoming(f, async () => { this._careState(d, f.ts); return { ok: true }; });
       default: this.unknown++;
     }
   }
@@ -318,26 +318,31 @@ class LinkClient extends EventEmitter {
   }
 
   // ---- sleep / meal questions, counted with the QQ side (spec 10)
-  _careState(d) {
+  // her side keeps the count for both sides; a state covers every question asked before it was sent (its ts),
+  // so only the pet's own questions after that are added on top
+  _careState(d, at) {
     if (d.action !== 'state' || !d.kind || !d.slot) return;
     this.state.care[`${d.kind}|${d.slot}`] = {
       asked_qq: Number(d.asked_qq) || 0, asked_desktop: Number(d.asked_desktop) || 0,
       answered: !!d.answered, stopped: !!d.stopped, limit: Number(d.limit) || P.CARE_LIMIT[d.kind] || 1,
+      at: Number(at) || Date.now(),
     };
   }
   careAllowed(kind, slot) {
     if (!slot) return false;
     const key = `${kind}|${slot}`;
-    const st = this.state.care[key], mine = this.state.careLocal[key] || { asked: 0 };
+    const st = this.state.care[key], mine = this.state.careLocal[key] || {};
+    const asks = Array.isArray(mine.asks) ? mine.asks : [];
     if (mine.answered || mine.stopped || (st && (st.answered || st.stopped))) return false;
-    const asked = (st ? st.asked_qq + Math.max(st.asked_desktop, mine.asked) : mine.asked);
+    const asked = st ? st.asked_qq + st.asked_desktop + asks.filter((t) => t >= st.at).length : asks.length;
     return asked < ((st && st.limit) || P.CARE_LIMIT[kind] || 1);
   }
   care(kind, slot, action) {
     if (!slot) return;
     const key = `${kind}|${slot}`;
-    const mine = this.state.careLocal[key] || (this.state.careLocal[key] = { asked: 0 });
-    if (action === 'asked') mine.asked++;
+    const mine = this.state.careLocal[key] || (this.state.careLocal[key] = {});
+    if (!Array.isArray(mine.asks)) mine.asks = [];
+    if (action === 'asked') mine.asks.push(Date.now());
     if (action === 'answered') mine.answered = true;
     if (action === 'stop') mine.stopped = true;
     this._queue(P.frame('event.care', { kind, slot, action, side: 'desktop' }, P.newId('c')));
