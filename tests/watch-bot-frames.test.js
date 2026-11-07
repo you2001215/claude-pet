@@ -57,3 +57,35 @@ test('cmd.point on the video being watched; cmd.mode switches the mode', () => {
     });
   } finally { setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 50); }
 });
+
+// the frames from the real adapter / hub / speaker (fake model)
+const REAL = JSON.parse(fs.readFileSync(path.join(__dirname, 'link', 'bot-frames-watch-real.json'), 'utf8'));
+
+test('real hub frames: lifetimes and lengths are what was agreed', () => {
+  const life = (k) => REAL[k].data.expires_at - REAL[k].ts;
+  assert.strictEqual(life('say'), 20000);
+  assert.strictEqual(life('say end'), 60000);
+  assert.strictEqual(life('summary'), 600000);
+  assert.strictEqual(life('point'), 300000);
+  for (const k of ['say', 'say end', 'ep say', 'ep end']) assert.ok(Array.from(REAL[k].data.parts[0].text).length <= 50, k);
+  const lines = REAL.summary.data.parts[0].text.split('\n');
+  assert.strictEqual(lines.length, 3);
+  for (const l of lines) assert.ok(Array.from(l).length <= 30, l);
+  for (const [k, f] of Object.entries(REAL)) if (!k.startsWith('_')) assert.ok(P.parse(JSON.stringify(f)), k);
+});
+
+test('real hub frames: anchors with p and cid match the video and part being watched', () => {
+  const s = new WatchSession({ send: () => {} });
+  report(s, { bvid: 'BV1Nt411a7Nm', cid: 50001, p: 1 }, 28);
+  assert.ok(s.fresh(REAL.say.data.watch));
+  assert.ok(s.fresh(REAL['say end'].data.watch));
+  assert.ok(!s.same(REAL.point.data), 'the point is about another video');
+  const two = new WatchSession({ send: () => {} });
+  report(two, { bvid: 'BV1Nt411a7Nm', cid: 50009, p: 2 }, 28);
+  assert.ok(!two.fresh(REAL.say.data.watch), 'same bvid, another part');
+  const ep = new WatchSession({ send: () => {} });
+  report(ep, { bvid: '', cid: 0, ep: 778899 }, 32);
+  assert.ok(ep.fresh(REAL['ep say'].data.watch));
+  assert.ok(ep.same(REAL['ep point'].data));
+  assert.ok(ep.fresh(REAL['ep end'].data.watch));
+});

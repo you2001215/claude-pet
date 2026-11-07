@@ -1,0 +1,11 @@
+{
+ "_说明": "AstrBot 那边合起来测时，真适配器、真 hub、真 Speaker 发出的一起看帧（11-07，「阿鲸桌宠接入」贴来的）。模型是假的，文字是假模型编的；ts / expires_at 是测试的假时钟，只看格式和差值。",
+ "say": {"v":1,"type":"cmd.say","id":"s_1a1b61f7249e50dd512da","ts":1794056876617,"data":{"source":"watch","parts":[{"text":"开头0号这段弹幕好好笑我也觉得很有意思主人你看！"}],"watch":{"bvid":"BV1Nt411a7Nm","t":30.0,"cid":50001,"p":1},"expires_at":1794056896617,"emotion":{"name":"开心","level":1}}},
+ "say end": {"v":1,"type":"cmd.say","id":"s_1a1b6281539bfae4612a1","ts":1794057442617,"data":{"source":"watch","parts":[{"text":"看完2号这段弹幕好好笑我也觉得很有意思主人你看！"}],"watch":{"bvid":"BV1Nt411a7Nm","t":600.0,"cid":50001,"p":1,"end":true},"expires_at":1794057502617,"emotion":{"name":"开心","level":1}}},
+ "point": {"v":1,"type":"cmd.point","id":"k_1a1b6296cf9e3899c62ec","ts":1794057530617,"data":{"bvid":"BV1Ch411a7Ct","cid":50002,"t":200.0,"text":"03:20 这段可以跳过去看看","expires_at":1794057830617,"p":1}},
+ "summary": {"v":1,"type":"cmd.say","id":"s_1a1b6793aa9c3204a0fa7","ts":1794062760617,"data":{"source":"watch","parts":[{"text":"弹幕最密那段大家都笑疯了我也跟着笑了好半天真的停不下来呢\n主人中途拖了一下进度\n结尾那几句字幕挺好的"}],"watch":{"bvid":"BV1Qt411a7Qt","t":300.0,"cid":50003,"p":1,"end":true},"expires_at":1794063360617,"emotion":{"name":"开心","level":1}}},
+ "mode": {"v":1,"type":"cmd.mode","id":"o_1a1b68272096df161ccca","ts":1794063364617,"data":{"mode":"quiet","hourly_max":25,"by":"chat"}},
+ "ep say": {"v":1,"type":"cmd.say","id":"s_1a1b685583913acc859b8","ts":1794063554617,"data":{"source":"watch","parts":[{"text":"开头44号这段弹幕好好笑我也觉得很有意思主人你！"}],"watch":{"bvid":"","t":30.0,"cid":50006,"ep":778899,"p":1},"expires_at":1794063574617,"emotion":{"name":"开心","level":1}}},
+ "ep point": {"v":1,"type":"cmd.point","id":"k_1a1b6855839815fa93f3a","ts":1794063554617,"data":{"bvid":"","cid":50006,"t":160.0,"text":"02:40 这段可以跳过去看看","expires_at":1794063854617,"ep":778899,"p":1}},
+ "ep end": {"v":1,"type":"cmd.say","id":"s_1a1b6894fd988c4d0af5e","ts":1794063814617,"data":{"source":"watch","parts":[{"text":"看完46号这段弹幕好好笑我也觉得很有意思主人你！"}],"watch":{"bvid":"","t":300.0,"cid":50006,"ep":778899,"p":1,"end":true},"expires_at":1794063874617,"emotion":{"name":"开心","level":1}}}
+}
