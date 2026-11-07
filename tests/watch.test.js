@@ -141,3 +141,17 @@ test('the browser script is valid and carries this computer\'s port and key', ()
   assert.throws(() => script({ port: 'x', key }));
   assert.throws(() => script({ port: 6231, key: "'; alert(1); '" }));
 });
+
+test('same video: bvid when there is one, else ep (bangumi); p too when given', () => {
+  const { s } = session();
+  s.report({ kind: 'heartbeat', video: { site: 'bilibili', bvid: '', cid: 0, ep: 12345, p: 1, title: '番剧' }, t: 300, paused: false, rate: 1 });
+  assert.ok(s.same({ bvid: '', ep: 12345, cid: 0, t: 300 }));
+  assert.ok(!s.same({ bvid: '', ep: 999, t: 300 }));
+  assert.ok(s.fresh({ bvid: '', ep: 12345, t: 305 }));
+  const b = session();
+  rep(b.s, 'heartbeat', { t: 10, video: { ...V, p: 2 } });
+  assert.ok(b.s.same({ bvid: V.bvid, t: 10 }), 'no p in the anchor: any part');
+  assert.ok(b.s.same({ bvid: V.bvid, p: 2, t: 10 }));
+  assert.ok(!b.s.same({ bvid: V.bvid, p: 1, t: 10 }), 'another part');
+  assert.ok(!b.s.same({ bvid: '', ep: 0, t: 10 }), 'nothing to match on');
+});

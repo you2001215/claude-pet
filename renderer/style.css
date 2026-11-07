@@ -73,6 +73,9 @@ html, body {
 }
 
 /* a button in the bubble: 「跳过去」 when she points at a moment, 「打开系统设置」 when a permission is missing */
+/* lines only break where the text has a line break (the watch-together summary has up to 3) */
+#bubble-text { white-space: pre-line; }
+
 #bubble-act[hidden] { display: none !important; }
 #bubble-act {
   display: block;

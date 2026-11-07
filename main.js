@@ -751,7 +751,8 @@ async function linkSay(d) {
   const { text, stickers: st } = link.toReply(d.parts);
   if (!text && !st.length) return { ok: true };
   if (source === 'watch') {
-    send('ai', { type: 'proactive', kind: 'link-watch', text, stickers: [], silent: !watch.speakOn() });
+    // the "we're done" line / quiet-mode summary (end): up to 3 lines, shown longer
+    send('ai', { type: 'proactive', kind: d.watch && d.watch.end ? 'link-watch-end' : 'link-watch', text, stickers: [], silent: !watch.speakOn() });
     if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', { text, stickers: [] });
     await ai.record('assistant', text, { via: 'ajing', source });
     pro.lastSaid = Date.now();
@@ -783,8 +784,7 @@ async function linkLate(d) {
 let pointNow = null;     // { ref, t, timer }
 function linkPoint(d, f) {
   if (d.expires_at && Date.now() > Number(d.expires_at)) return { ok: false, code: 'expired' };
-  const at = watch.position();
-  if (!at || (d.bvid && d.bvid !== at.bvid)) return { ok: false, code: 'stale' };
+  if (!watch.same(d)) return { ok: false, code: 'stale' };
   if (pointNow) clearTimeout(pointNow.timer);
   const ref = f.id;
   pointNow = { ref, t: Number(d.t) || 0, timer: setTimeout(() => {

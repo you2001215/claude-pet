@@ -1012,15 +1012,17 @@
       if (maid && CM) talkClip = pick(CM.talk);
       if (state === 'think') setState('idle', rand(4, 7));
       // watching together: short, and gone soon (the video moves on)
-      const watching = ev.kind === 'link-watch';
-      const t = shorten(ev.text || '', ev.kind === 'lookAsk' ? 110 : watching ? 50 : 90);
+      const watchEnd = ev.kind === 'link-watch-end';
+      const watching = ev.kind === 'link-watch' || watchEnd;
+      const t = watchEnd ? String(ev.text || '').split('\n').map((l) => shorten(l, 30)).filter(Boolean).slice(0, 3).join('\n')
+        : shorten(ev.text || '', ev.kind === 'lookAsk' ? 110 : watching ? 50 : 90);
       if (sleeping && ev.kind !== 'chat') { sleeping = false; P.sleepState(false); setState('idle', 3); }
       if (!['drag', 'fall'].includes(state)) {
         if ((ev.kind === 'startup' || ev.kind === 'return') && has('wave')) setState('wave', 2.8);
         else if ((ev.kind === 'rest' || ev.kind === 'night') && has('stretch')) setState('stretch', 2.6);
         else { happyUntil = now() + 1.2; if (state === 'sit' || state === 'walk') setState('idle', rand(4, 7)); }
       }
-      sayLive(t, watching ? 8 : clamp(Array.from(t).length * 0.25 + 4, 6, 16));
+      sayLive(t, watchEnd ? 12 : watching ? 8 : clamp(Array.from(t).length * 0.25 + 4, 6, 16));
       bubbleText.style.display = t ? '' : 'none';
       showSticker(ev.stickers);
       const h = headPoint(); spawn('note', h.x + 20, h.y, { max: 1.3 });

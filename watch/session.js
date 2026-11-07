@@ -98,7 +98,17 @@ class WatchSession extends EventEmitter {
     const c = this.cur;
     if (!c || !c.started || c.left || this.now() - c.at > 30000) return null;
     const t = c.paused ? c.t : c.t + ((this.now() - c.at) / 1000) * c.rate;
-    return { bvid: c.video.bvid, cid: c.video.cid, p: c.video.p, t: Math.round(t * 10) / 10, paused: c.paused, title: c.video.title };
+    return { bvid: c.video.bvid, cid: c.video.cid, p: c.video.p, ep: c.video.ep || 0, t: Math.round(t * 10) / 10, paused: c.paused, title: c.video.title };
+  }
+
+  // is anchor a (from her side: { bvid, ep, cid, p }) about the video being watched? bvid when it has one, else ep;
+  // p too when it says which part
+  same(a, p = this.position()) {
+    if (!a || !p) return false;
+    if (a.bvid) { if (a.bvid !== p.bvid) return false; }
+    else if (a.ep) { if (num(a.ep) !== num(p.ep)) return false; }
+    else return false;
+    return !(a.p && p.p && num(a.p) !== num(p.p));
   }
 
   // a line she said about point `w.t` of video `w.bvid`: still worth showing? (section 16.7)
@@ -106,7 +116,7 @@ class WatchSession extends EventEmitter {
     if (!w || typeof w !== 'object') return false;
     if (w.end) return true;                 // the "we're done" line / the quiet-mode summary: only the expiry counts
     const p = this.position();
-    if (!p || (w.bvid && w.bvid !== p.bvid)) return false;
+    if (!p || !this.same(w, p)) return false;
     if (p.paused && mode !== 'chatty') return false;
     return Math.abs(p.t - num(w.t, -1e9)) <= 20;
   }

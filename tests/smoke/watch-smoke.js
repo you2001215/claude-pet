@@ -172,10 +172,14 @@ module.exports = async (getWin) => {
       await report('leave');
       await until(() => watchFrames('leave').length > 0, 3000);
       const acks0 = fake.acks.length;
-      fake.push('cmd.say', { source: 'watch', parts: [{ text: '看完啦，今天这个好好笑' }], watch: { bvid: VIDEO.bvid, t: 1325, end: true }, expires_at: Date.now() + 60000 });
+      // the quiet-mode summary: up to 3 lines, kept as lines
+      fake.push('cmd.say', { source: 'watch', parts: [{ text: '看完啦\n今天这个好好笑\n下次还一起看' }], watch: { bvid: VIDEO.bvid, t: 1325, end: true }, expires_at: Date.now() + 600000 });
       await until(() => fake.acks.length > acks0, 3000);
       const b = await until(async () => { const t = await bubble(); return t && t.includes('看完啦') ? t : ''; }, 4000);
-      return { ok: fake.acks[acks0].ok === true && !!b, detail: `bubble=${b}` };
+      const lines = String(b || '').split('\n');
+      await sleep(300);
+      await shot(w, '桌宠-看完小结.png');
+      return { ok: fake.acks[acks0].ok === true && lines.length === 3 && lines[2] === '下次还一起看', detail: `bubble=${JSON.stringify(b)}` };
     });
     await check('真的油猴脚本：在一个假的 B 站视频页里跑，报的进度和「跳过去」都对', async () => {
       // a page shaped like a bilibili video page, with a real playing video

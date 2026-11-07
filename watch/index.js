@@ -106,6 +106,7 @@ module.exports = {
   script: () => script({ port: cfg.port, key: cfg.key }),
   position: () => (session ? session.position() : null),
   fresh: (w) => !!session && session.fresh(w, cfg.mode),
+  same: (a) => !!session && session.same(a),
   seek: (t) => (session ? session.seek(t) : ''),
   speakOn: () => cfg.speak,
   stop: () => { if (session) session.stop(); if (srv) { const s = srv; srv = null; return s.close(); } return Promise.resolve(); },
