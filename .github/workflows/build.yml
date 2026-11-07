@@ -137,6 +137,35 @@ jobs:
         env:
           CSC_FOR_PULL_REQUEST: 'true'
         run: npm run dist:mac -- --publish never
+      # fixed signature (so macOS keeps the screen recording / microphone permissions across versions): with the
+      # owner's certificate in MAC_CERT_P12 / MAC_CERT_PASSWORD the app is re-signed with it; without them (forks,
+      # or before it is set up) the build stays ad-hoc and the signing is only rehearsed on a copy
+      - name: 准备签名证书（有主人的证书就用它，没有就临时生成一张演练用）
+        id: cert
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: bash scripts/mac-cert.sh
+      - name: 用主人的证书签名，并检查 designated requirement
+        if: steps.cert.outputs.mode == 'real'
+        run: |
+          node scripts/mac-sign.js sign dist/mac-arm64/ClaudePet.app "${{ steps.cert.outputs.sha1 }}" "${{ steps.cert.outputs.keychain }}"
+          node scripts/mac-sign.js check dist/mac-arm64/ClaudePet.app "${{ steps.cert.outputs.sha1 }}" build/mac-cert-sha1.txt
+      - name: 签名演练（临时证书签一份副本、签两次，两次的 designated requirement 要一样；不影响出的包）
+        if: steps.cert.outputs.mode == 'rehearsal'
+        run: |
+          R="$RUNNER_TEMP/rehearsal"
+          for i in 1 2; do
+            rm -rf "$R"; mkdir -p "$R"
+            ditto dist/mac-arm64/ClaudePet.app "$R/ClaudePet.app"
+            node scripts/mac-sign.js sign "$R/ClaudePet.app" "${{ steps.cert.outputs.sha1 }}" "${{ steps.cert.outputs.keychain }}"
+            node scripts/mac-sign.js check "$R/ClaudePet.app" "${{ steps.cert.outputs.sha1 }}" | tee "$RUNNER_TEMP/dr$i.txt"
+          done
+          diff "$RUNNER_TEMP/dr1.txt" "$RUNNER_TEMP/dr2.txt" && echo "same designated requirement both times"
+          rm -rf "$R"
+      - name: 收拾签名用的钥匙串
+        if: always() && steps.cert.outputs.keychain != ''
+        run: security delete-keychain "${{ steps.cert.outputs.keychain }}" || true
       - name: 检查签名
         run: codesign --verify --deep --strict --verbose=2 dist/mac-arm64/ClaudePet.app
       - name: 打成 zip 并计算 sha256
