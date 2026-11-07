@@ -17,6 +17,7 @@ const DAY = 86400000;
 const later = (fn, ms) => { const h = setTimeout(fn, ms); if (h.unref) h.unref(); return h; };
 const every = (fn, ms) => { const h = setInterval(fn, ms); if (h.unref) h.unref(); return h; };
 const OUTBOX_MAX = 500;
+const ID_PREFIX = { 'event.watch': 'w', 'event.mode': 'o', 'event.typing': 'y', 'event.point': 'q', 'event.screen': 'x' };
 const SEEN_MAX = 2000;
 
 class LinkClient extends EventEmitter {
@@ -39,6 +40,9 @@ class LinkClient extends EventEmitter {
     this.limits = { text_max: 4000, batch_max: 200 };
     this.onSay = o.onSay || (async () => ({ ok: true }));
     this.onSnapshot = o.onSnapshot || (async () => {});
+    this.onMode = o.onMode || (async () => ({ ok: true }));      // cmd.mode (watch-together mode said in chat)
+    this.onPoint = o.onPoint || (async () => ({ ok: true }));    // cmd.point (「她指他点」)
+    this.features = [];           // what her side said it supports (welcome.features): 'watch', 'images'
     this._status = 'off';
     this.detail = '';
     this.deviceId = '';
@@ -193,6 +197,8 @@ class LinkClient extends EventEmitter {
       case 'cmd.say': return this._incoming(f, () => this.onSay(d, f));
       case 'snapshot.data': return this._incoming(f, async () => { await this.onSnapshot(d, f); return { ok: true }; });
       case 'event.care': return this._incoming(f, async () => { this._careState(d, f.ts); return { ok: true }; });
+      case 'cmd.mode': return this._incoming(f, () => this.onMode(d, f));
+      case 'cmd.point': return this._incoming(f, () => this.onPoint(d, f));
       default: this.unknown++;
     }
   }
@@ -200,6 +206,7 @@ class LinkClient extends EventEmitter {
   _welcome(d) {
     clearTimeout(this.timers.welcome);
     this.deviceId = String(d.device_id || '');
+    this.features = Array.isArray(d.features) ? d.features.map(String) : [];
     if (d.token) this.setToken(String(d.token), this.deviceId);
     if (d.limits && typeof d.limits === 'object') {
       if (d.limits.text_max > 0) this.limits.text_max = d.limits.text_max;
@@ -290,12 +297,26 @@ class LinkClient extends EventEmitter {
     return made;
   }
 
+  hasFeature(name) { return this.online && this.features.includes(name); }
+
+  // any other message: acked ones wait in the outbox like chat.send, the rest only go out while connected
+  // (progress, typing: stale a moment later anyway). Returns the id, or '' when it wasn't sent.
+  send(type, data = {}, { ack = false } = {}) {
+    const f = P.frame(type, data, P.newId(ID_PREFIX[type] || type[0]));
+    if (ack) { this._queue(f); return f.id; }
+    return this.online && this._send(f) ? f.id : '';
+  }
+
   // ask her. Resolves { id, kind: 'done', data } or { id, kind: 'merged', into }; rejects with code
   // offline | timeout | model_failed | ... (err.id is the message id either way, for reply_to)
-  chat(text, input = 'text') {
+  // extra: { context, images } (watch-together play point, a screenshot she was asked to look at)
+  chat(text, input = 'text', extra = {}) {
     const id = P.newId('m');
     if (!this.online) return Promise.reject(Object.assign(new Error('offline'), { code: 'offline', id }));
-    const f = P.frame('chat.send', { text: String(text).slice(0, this.limits.text_max), input: input === 'voice' ? 'voice' : 'text' }, id);
+    const data = { text: String(text).slice(0, this.limits.text_max), input: input === 'voice' ? 'voice' : 'text' };
+    if (extra.context && typeof extra.context === 'object') data.context = extra.context;
+    if (Array.isArray(extra.images) && extra.images.length) data.images = extra.images.slice(0, 1);
+    const f = P.frame('chat.send', data, id);
     const done = new Promise((resolve, reject) => {
       const timer = later(() => this._settle(id, null, Object.assign(new Error('timeout'), { code: 'timeout', retry: true })), this.replyTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });

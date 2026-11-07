@@ -63,15 +63,17 @@ function makeClient() {
     log: (m) => log(m), timers: hooks.timers,
     onSay: (d, f) => (hooks.onSay ? hooks.onSay(d, f) : { ok: true }),
     onSnapshot: (d) => saveSnapshot(d),
+    onMode: (d, f) => (hooks.onMode ? hooks.onMode(d, f) : { ok: true }),
+    onPoint: (d, f) => (hooks.onPoint ? hooks.onPoint(d, f) : { ok: false, code: 'not_allowed' }),
   });
-  client.on('status', (s, detail) => { if (hooks.onStatus) hooks.onStatus(s, detail); });
+  client.on('status', (s, detail) => { if (hooks.onStatus) hooks.onStatus(s, detail); if (s === 'online' && hooks.onOnline) hooks.onOnline(); });
   client.on('late', (d) => { if (hooks.onLate) hooks.onLate(d); });
 }
 
 // o: { userData, safeStorage, appVersion, log, onSay(data) -> { ok, code }, onStatus(status), onLate(chatDone), timers }
 function init(o) {
   dir = o.userData; safe = o.safeStorage || null; appVersion = o.appVersion || ''; log = o.log || log;
-  hooks = { onSay: o.onSay, onStatus: o.onStatus, onLate: o.onLate, timers: o.timers };
+  hooks = { onSay: o.onSay, onStatus: o.onStatus, onLate: o.onLate, onMode: o.onMode, onPoint: o.onPoint, onOnline: o.onOnline, timers: o.timers };
   const r = store.readJsonSync(file('link.json'), null);
   if (r && r.data && typeof r.data === 'object') cfg = { ...cfg, ...r.data };
   if (!P.urlOk(cfg.url)) cfg.url = P.DEFAULT_URL;
@@ -218,7 +220,10 @@ function diagnostics() {
 
 module.exports = {
   init, getConfig, setConfig, pair, unpair, paired, online, away, linked, offlinePrompt, getSnapshot, toReply, mediaPath, diagnostics,
-  chat: (text, input) => client.chat(text, input),
+  chat: (text, input, extra) => client.chat(text, input, extra),
+  // her side supports this (welcome.features): 'watch', 'images'
+  feature: (name) => !!(cfg.enabled && client && client.hasFeature(name)),
+  send: (type, data, opts) => (cfg.enabled && client ? client.send(type, data, opts) : ''),
   offline: (items) => { if (linked() && client) client.offline(items); },
   careAllowed: (kind, slot) => !!client && client.careAllowed(kind, slot),
   care: (kind, slot, action) => { if (linked() && client) client.care(kind, slot, action); },

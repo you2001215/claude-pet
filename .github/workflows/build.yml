@@ -162,7 +162,15 @@ jobs:
             node scripts/mac-sign.js check "$R/ClaudePet.app" "${{ steps.cert.outputs.sha1 }}" | tee "$RUNNER_TEMP/dr$i.txt"
           done
           diff "$RUNNER_TEMP/dr1.txt" "$RUNNER_TEMP/dr2.txt" && echo "same designated requirement both times"
-          rm -rf "$R"
+          # the copy signed with the certificate has to start too
+          mkdir -p "$RUNNER_TEMP/rehearsal-data"
+          "$R/ClaudePet.app/Contents/MacOS/ClaudePet" --user-data-dir="$RUNNER_TEMP/rehearsal-data" > "$RUNNER_TEMP/rehearsal.log" 2>&1 &
+          PID=$!
+          sleep 10
+          if ! kill -0 "$PID" 2>/dev/null; then cat "$RUNNER_TEMP/rehearsal.log"; echo "::error::the certificate-signed copy exited within 10 s"; exit 1; fi
+          kill "$PID"; sleep 2; kill -9 "$PID" 2>/dev/null || true
+          echo "certificate-signed copy ran for 10 s"
+          rm -rf "$R" "$RUNNER_TEMP/rehearsal-data"
       - name: 收拾签名用的钥匙串
         if: always() && steps.cert.outputs.keychain != ''
         run: security delete-keychain "${{ steps.cert.outputs.keychain }}" || true
