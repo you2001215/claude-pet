@@ -1,0 +1,10 @@
+{
+ "_说明": "AstrBot 那边端到端测试里实际发出的一起看帧（「阿鲸桌宠接入」11-07 贴来的；文字是测试编的，末尾 3 个字母是测试标记）。真的 hub 发出去时，有 bvid 的锚点还会带 p 和 cid。tests/watch-bot-frames.test.js 拿它们对桌宠的判断。",
+ "features": ["watch", "images"],
+ "cmd.say watch": {"v":1,"type":"cmd.say","id":"s_1a1b5feb1c9fa324ab00b","ts":1794054730185,"data":{"source":"watch","parts":[{"text":"这段弹幕笑死了QWE"}],"watch":{"bvid":"BV1xx411c7mD","t":315.0},"expires_at":1794054750185,"emotion":{"name":"开心","level":1}}},
+ "cmd.say watch end": {"v":1,"type":"cmd.say","id":"s_1a1b5feb1caf9248cbff5","ts":1794054730186,"data":{"source":"watch","parts":[{"text":"看完啦这个好看RTY"}],"watch":{"bvid":"BV1xx411c7mD","t":1325.4,"end":true},"expires_at":1794054790186}},
+ "cmd.say watch 番剧": {"v":1,"type":"cmd.say","id":"s_1a1b5feb1cab68af8b518","ts":1794054730186,"data":{"source":"watch","parts":[{"text":"番剧这句JKL"}],"watch":{"bvid":"","t":30.0,"cid":0,"ep":778899,"p":1},"expires_at":1794054750186,"emotion":{"name":"上头","level":1}}},
+ "cmd.point": {"v":1,"type":"cmd.point","id":"k_1a1b5feb3c26b890730d9","ts":1794054730690,"data":{"bvid":"BV1xx411c7mD","cid":123456,"t":452.0,"text":"07:32 这段你一定要看ZXC","expires_at":1794055030690}},
+ "cmd.point 番剧": {"v":1,"type":"cmd.point","id":"k_1a1b5feb48cebf27cb464","ts":1794054730892,"data":{"bvid":"","cid":0,"t":30.0,"text":"番剧这里VBN","expires_at":1794055030892,"ep":778899,"p":1}},
+ "cmd.mode": {"v":1,"type":"cmd.mode","id":"o_1a1b5feb558f8d5f1f380","ts":1794054731096,"data":{"mode":"quiet","hourly_max":25,"by":"chat"}}
+}
