@@ -213,7 +213,7 @@ function diagnostics() {
   const c = getConfig(), i = client ? client.info() : {};
   return {
     开着: c.enabled, 已配对: c.paired, 状态: c.status + (c.detail ? `（${c.detail}）` : ''), 默认地址: c.url === P.DEFAULT_URL,
-    待发: i.outbox || 0, 待补交: i.offline || 0, 丢弃: i.dropped || 0, 看不懂的帧: i.bad || 0, 不认识的类型: i.unknown || 0,
+    待发: i.outbox || 0, 待补交: i.offline || 0, 丢弃: i.dropped || 0, 看不懂的帧: i.bad || 0, 不认识的类型: i.unknown || 0, 对方没收: i.refused || 0,
     有快照: !!snapshot, 令牌没加密: c.plainToken,
   };
 }

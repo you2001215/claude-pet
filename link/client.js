@@ -52,6 +52,7 @@ class LinkClient extends EventEmitter {
     this.pending = new Map();     // chat.send id -> { resolve, reject, timer }
     this.bad = 0;                 // frames we could not read
     this.unknown = 0;             // frames of a type we don't know
+    this.refused = 0;             // our frames her side acked with ok:false (invalid, too_long…): not sent again
     this.timers = {};
     this.state = this._load();
   }
@@ -89,7 +90,7 @@ class LinkClient extends EventEmitter {
   }
   info() {
     return { status: this._status, detail: this.detail, deviceId: this.deviceId, outbox: this.state.outbox.length,
-      offline: this.state.offline.length, dropped: this.state.dropped, bad: this.bad, unknown: this.unknown };
+      offline: this.state.offline.length, dropped: this.state.dropped, bad: this.bad, unknown: this.unknown, refused: this.refused };
   }
 
   // ---- connecting
@@ -243,6 +244,7 @@ class LinkClient extends EventEmitter {
     const [e] = this.state.outbox.splice(i, 1);
     this._save();
     if (d.ok === false && d.code !== 'duplicate') {
+      this.refused++;
       this.log(`对方没收：${e.f.type} ${d.code || ''}`);
       if (e.f.type === 'chat.send') this._settle(ref, null, Object.assign(new Error(d.code || 'refused'), { code: d.code || 'refused', retry: true }));
     }
