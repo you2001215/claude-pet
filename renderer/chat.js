@@ -15,7 +15,11 @@
     input.focus();
   });
   let live = null;
-  let voiceText = '';   // what speech recognition put in the box: sent as-is, it is marked as spoken (may have typos)
+  let voiceText = '';
+  // watching together: she holds back while you're typing (only sent when her side supports it; the main process decides)
+  let typingNow = false;
+  const typingIs = (v) => { if (v !== typingNow) { typingNow = v; try { U.typing(v); } catch (_) {} } };
+  input.addEventListener('input', () => typingIs(input.value.trim() !== ''));   // what speech recognition put in the box: sent as-is, it is marked as spoken (may have typos)
 
   function addStickers(el, list) {
     for (const st of list || []) {
@@ -76,6 +80,7 @@
     if (!text) return;
     busy = true; sendBtn.disabled = true;
     input.value = '';
+    typingIs(false);
     add('user', withScreen ? text + '（📷 附上了屏幕截图）' : text);
     live = add('assistant', '');
     live.classList.add('typing');
@@ -109,7 +114,13 @@
       status.textContent = '在你桌面上待着';
     } else {
       live.remove();
-      add('error', r.error || '出错了');
+      const err = add('error', r.error || '出错了');
+      if (r.code === 'capture' && U.platform === 'darwin') {
+        const b = document.createElement('button');
+        b.className = 'ghost'; b.textContent = '打开系统设置'; b.style.marginLeft = '8px';
+        b.addEventListener('click', () => U.openScreenSettings());
+        err.appendChild(b);
+      }
       status.textContent = '刚刚没接上话';
       if (r.code === 'nokey') refreshHint();
     }

@@ -8,6 +8,11 @@
   const bubbleEl = document.getElementById('bubble');
   const bubbleText = document.getElementById('bubble-text');
   const bubbleSticker = document.getElementById('bubble-sticker');
+  // one button under the text, for the few lines that need one (「跳过去」, 「打开系统设置」); gone with the line
+  const bubbleAct = document.getElementById('bubble-act');
+  let bubbleActFn = null;
+  function showAct(label, fn) { bubbleAct.textContent = label; bubbleAct.hidden = false; bubbleActFn = fn; }
+  function clearAct() { bubbleAct.hidden = true; bubbleActFn = null; }
   function showSticker(list) {
     const st = list && list[0];
     if (!st) { bubbleSticker.hidden = true; bubbleSticker.removeAttribute('src'); return; }
@@ -224,6 +229,7 @@
   let bubbleHideAt = 0, typing = null;
   function say(text, ms) {
     if (!text) return;
+    clearAct();
     showSticker(null);
     clearInterval(typing);
     bubbleText.textContent = '';
@@ -242,6 +248,7 @@
     if (!(V && V.speaking)) P.speakLine(text);   // never talk over her own AI reply
   }
   function sayLive(text, holdSec) {
+    clearAct();
     clearInterval(typing);
     showSticker(null);
     bubbleText.style.display = '';
@@ -251,7 +258,7 @@
     placeBubble();
   }
   const shorten = (t, n = 90) => { const a = Array.from(t.replace(/\s+/g, ' ').trim()); return a.length > n ? a.slice(0, n - 1).join('') + '…' : a.join(''); };
-  function hideBubble() { bubbleEl.classList.add('hidden'); bubbleHideAt = 0; clearInterval(typing); showSticker(null); }
+  function hideBubble() { bubbleEl.classList.add('hidden'); bubbleHideAt = 0; clearInterval(typing); showSticker(null); clearAct(); }
   function headTopY() {
     if (claudeVideo() && state !== 'drag') return H - FOOT - cfg.height + 4;   // clips are drawn head-to-feet = cfg.height
     if (maid && CM) {
@@ -273,6 +280,7 @@
     bubbleEl.style.setProperty('--tail-x', clamp(cx - left, 14, bw - 14) + 'px');
   }
   bubbleEl.addEventListener('mousedown', (e) => { e.stopPropagation(); hideBubble(); if (V && V.speaking) V.stop(); });
+  bubbleAct.addEventListener('mousedown', (e) => { e.stopPropagation(); const fn = bubbleActFn; hideBubble(); if (fn) fn(); });
 
   // ---------------- particles ----------------
   const parts = [];
@@ -965,6 +973,19 @@
   });
   P.onAi((ev) => {
     interact();
+    if (ev.type === 'point') {
+      // 「她指他点」: she points at a moment of the video; only your click moves it
+      sayLive(shorten(ev.text || '', 60), 15);
+      showAct('跳过去 ▶', () => P.pointJump(ev.ref));
+      placeBubble();
+      return;
+    }
+    if (ev.type === 'hint') {
+      sayLive(shorten(ev.text || '', 110), 20);
+      if (ev.action === 'screen-settings') showAct('打开系统设置', () => P.openScreenSettings());
+      placeBubble();
+      return;
+    }
     if (ev.type === 'thinking') {
       aiStreaming = false;
       if (sleeping) { sleeping = false; P.sleepState(false); }
@@ -990,14 +1011,16 @@
       aiTalkUntil = now() + clamp(Array.from(ev.text || '').length * 0.25 + 3, 5, 14);
       if (maid && CM) talkClip = pick(CM.talk);
       if (state === 'think') setState('idle', rand(4, 7));
-      const t = shorten(ev.text || '', ev.kind === 'lookAsk' ? 110 : 90);
+      // watching together: short, and gone soon (the video moves on)
+      const watching = ev.kind === 'link-watch';
+      const t = shorten(ev.text || '', ev.kind === 'lookAsk' ? 110 : watching ? 50 : 90);
       if (sleeping && ev.kind !== 'chat') { sleeping = false; P.sleepState(false); setState('idle', 3); }
       if (!['drag', 'fall'].includes(state)) {
         if ((ev.kind === 'startup' || ev.kind === 'return') && has('wave')) setState('wave', 2.8);
         else if ((ev.kind === 'rest' || ev.kind === 'night') && has('stretch')) setState('stretch', 2.6);
         else { happyUntil = now() + 1.2; if (state === 'sit' || state === 'walk') setState('idle', rand(4, 7)); }
       }
-      sayLive(t, clamp(Array.from(t).length * 0.25 + 4, 6, 16));
+      sayLive(t, watching ? 8 : clamp(Array.from(t).length * 0.25 + 4, 6, 16));
       bubbleText.style.display = t ? '' : 'none';
       showSticker(ev.stickers);
       const h = headPoint(); spawn('note', h.x + 20, h.y, { max: 1.3 });

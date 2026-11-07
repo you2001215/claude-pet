@@ -68,6 +68,42 @@
     </div>
   </div>
 
+  <div class="card" id="watchCard">
+    <h2>一起看视频（B 站）</h2>
+    <p class="note">连上阿鲸、而且阿鲸那边支持一起看的时候，你在浏览器里看 B 站视频，她会在旁边看着、偶尔说一句，看到好玩的地方还会指给你（点「跳过去」才会跳）。要先在浏览器里装一个油猴脚本：它只把「哪个视频、播到哪、停没停」告诉这台电脑上的桌宠，不读弹幕、评论和账号，也不会自己动你的进度。</p>
+    <label class="switch"><input type="checkbox" id="watchOn"> 开启一起看</label>
+    <div id="watchBody">
+      <div class="row">
+        <label>状态</label>
+        <div id="watchState" class="note"></div>
+      </div>
+      <div class="row">
+        <label>她说话的多少</label>
+        <select id="watchMode">
+          <option value="quiet">安静：看的时候不插话，看完说几句</option>
+          <option value="normal">正常（默认）：开头、最热闹的地方、看完各一句</option>
+          <option value="chatty">话多：说得勤一些，暂停时也会说</option>
+        </select>
+      </div>
+      <div class="row" id="watchMaxRow">
+        <label>话多时每小时最多说几句（10～60）</label>
+        <input id="watchMax" type="number" min="10" max="60" style="width:90px">
+      </div>
+      <label class="switch"><input type="checkbox" id="watchSpeak"> 一起看时也念出来（默认不念，免得和视频的声音打架）</label>
+      <p class="note">也可以直接跟她说「安静看片」「随便说」来换档。</p>
+      <div class="inline" style="margin-top:8px"><button id="watchCopy">复制油猴脚本</button><button class="ghost" id="watchNewKey">换一个口令</button></div>
+      <p class="note">装法：① 浏览器装上 Tampermonkey（篡改猴）扩展；② 点上面「复制油猴脚本」；③ 打开 Tampermonkey →「添加新脚本」，把里面原有的字全删掉，粘贴，按 Ctrl+S（Mac 是 Cmd+S）保存；④ 打开一个 B 站视频，看这里的状态有没有变成「脚本连上了」。脚本里带着这台电脑的口令，不要发给别人；不小心发出去了就点「换一个口令」，再重新装一次脚本。</p>
+      <details>
+        <summary class="note">高级：端口</summary>
+        <div class="row">
+          <label>本机端口（一般不用改，改了要重新复制脚本）</label>
+          <div class="inline"><input id="watchPort" type="number" min="1024" max="65535" style="width:110px"><button class="ghost" id="watchPortSave">保存端口</button></div>
+        </div>
+      </details>
+      <div class="msgline" id="watchMsg"></div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>人格和记忆存在哪</h2>
     <div class="row">
@@ -264,5 +300,6 @@
 <script src="settings.js"></script>
 <script src="settings-voice.js"></script>
 <script src="settings-link.js"></script>
+<script src="settings-watch.js"></script>
 </body>
 </html>

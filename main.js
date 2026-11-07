@@ -18,6 +18,8 @@ const voiceHost = require('./voice/engine-host');
 const link = require('./link');
 const linkLines = require('./link/lines');
 const linkProto = require('./link/protocol');
+// watching videos together (phase 2): the browser script's local endpoint and what goes to her side
+const watch = require('./watch');
 
 // serve the UI from app://pet/... so canvas pixels stay same-origin (needed for click-through hit tests)
 protocol.registerSchemesAsPrivileged([
@@ -302,7 +304,7 @@ function send(ch, ...args) {
   if (ch === 'ai') {
     const ev = args[0] || {};
     if ((ev.type === 'thinking' || ev.type === 'looking')) { voice.stopSpeaking(); voice.warm('tts'); }
-    else if (['done', 'proactive', 'reminder'].includes(ev.type) && ev.text) voice.speak(ev.text);
+    else if (['done', 'proactive', 'reminder'].includes(ev.type) && ev.text && !ev.silent) voice.speak(ev.text);
   }
 }
 function broadcast(ch, payload) {
@@ -391,8 +393,8 @@ function openSettings() {
 // ---------- chat ----------
 const NO_DROPS = { memories: 0, reminders: 0, cancels: 0, refused: 0 };
 // her reply through AstrBot: shown like the pet's own, kept in the chat history
-async function linkedChat(text, input) {
-  const r = await link.chat(text, input);
+async function linkedChat(text, input, extra) {
+  const r = await link.chat(text, input, extra);
   if (r.kind === 'merged') {
     // answered together with the message before it: that reply covers this one too
     await ai.record('user', text);
@@ -413,13 +415,24 @@ handle('ai:send', async (_e, text, withScreen, input) => {
   careHeard(String(text || ''));
   input = input === 'voice' ? 'voice' : 'text';
   let standInFor = '';
-  if (link.online() && !withScreen) {
+  if (link.online() && (!withScreen || link.feature('images'))) {
     send('ai', { type: 'thinking' });
     try {
-      const r = await linkedChat(String(text || '').slice(0, 4000), input);
+      const extra = {};
+      const at = link.feature('watch') ? watch.position() : null;
+      if (at) extra.context = { watch: { bvid: at.bvid, cid: at.cid, t: at.t, paused: at.paused } };
+      if (withScreen) {
+        let shot;
+        try { shot = await captureScreen(); } catch (e) { logError('capture', e); screenHint(e); throw Object.assign(new Error(captureError(e)), { code: 'capture' }); }
+        const img = imagePart(shot);
+        if (!img) throw Object.assign(new Error('截图太大了，没发出去'), { code: 'capture' });
+        extra.images = [img];
+      }
+      const r = await linkedChat(String(text || '').slice(0, 4000), input, extra);
       pro.lastUserChat = Date.now();
       return r;
     } catch (e) {
+      if (e.code === 'capture') { send('ai', { type: 'error', code: 'capture', text: e.message }); return { ok: false, error: e.message, code: 'capture' }; }
       if (!e.retry && e.code !== 'offline') {
         send('ai', { type: 'error', code: e.code || '', text: '阿鲸那边没收下这句话' });
         return { ok: false, error: '阿鲸那边没收下这句话（' + (e.code || '出错了') + '）', code: e.code || '' };
@@ -431,7 +444,7 @@ handle('ai:send', async (_e, text, withScreen, input) => {
   try {
     let image = null;
     if (withScreen) {
-      try { image = await captureScreen(); } catch (e) { logError('capture', e); throw Object.assign(new Error('截屏失败：' + e.message + (isMac ? '（Mac 需要在「系统设置 → 隐私与安全性 → 录屏与系统录音」里允许 ClaudePet，然后重启它）' : '')), { code: 'capture' }); }
+      try { image = await captureScreen(); } catch (e) { logError('capture', e); screenHint(e); throw Object.assign(new Error(captureError(e)), { code: 'capture' }); }
     }
     const r = await ai.send(String(text || '').slice(0, 4000), (t) => {
       if (chatWin) chatWin.webContents.send('ai:delta', t);
@@ -654,7 +667,9 @@ function displayFor(front) {
 }
 
 async function lookAndComment(kind, front) {
-  if (!ai.hasKey()) { send('ai', { type: 'error', code: 'nokey', text: '' }); return false; }
+  // you asked her to look and her side takes pictures: she looks herself (no words of yours: text is empty)
+  const toHer = kind === 'lookAsk' && link.online() && link.feature('images');
+  if (!toHer && !ai.hasKey()) { send('ai', { type: 'error', code: 'nokey', text: '' }); return false; }
   if (pro.busy) return false;
   pro.busy = true;
   const auto = kind !== 'lookAsk';
@@ -666,6 +681,14 @@ async function lookAndComment(kind, front) {
       if (ai.busy()) return false;              // you started chatting meanwhile: that reply takes over the bubble
     }
     const image = await captureScreen(auto ? displayFor(front) : null);
+    if (toHer) {
+      const img = imagePart(image);
+      if (!img) throw new Error('截图太大了，没发出去');
+      const at = link.feature('watch') ? watch.position() : null;
+      await linkedChat('', 'text', { images: [img], ...(at ? { context: { watch: { bvid: at.bvid, cid: at.cid, t: at.t, paused: at.paused } } } : {}) });
+      pro.lastSaid = Date.now();
+      return true;
+    }
     const r = await ai.proactive(kind, { image });
     send('ai', { type: 'proactive', kind, text: r.text, stickers: r.stickers });
     if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', r);
@@ -675,6 +698,7 @@ async function lookAndComment(kind, front) {
     return true;
   } catch (e) {
     logError('look', e);
+    screenHint(e);
     // she already said she was looking, so even an automatic look has to end the "looking" pose (pet.js keeps it soft)
     send('ai', { type: 'error', code: 'look', text: e.message, auto });
     // a vision model or endpoint that keeps refusing images: wait 2 h, then 4, 8... (up to a day) instead of every round
@@ -721,9 +745,18 @@ async function lookTick() {
 // ---------- what 阿鲸 sends on her own (cmd.say) and replies that came after the pet gave up waiting ----------
 async function linkSay(d) {
   if (d.expires_at && Date.now() > Number(d.expires_at)) return { ok: false, code: 'expired' };
+  const source = String(d.source || '');
+  // watching together: a line about a moment you have already left behind is dropped (section 16.7)
+  if (source === 'watch' && !watch.fresh(d.watch)) return { ok: false, code: 'stale' };
   const { text, stickers: st } = link.toReply(d.parts);
   if (!text && !st.length) return { ok: true };
-  const source = String(d.source || '');
+  if (source === 'watch') {
+    send('ai', { type: 'proactive', kind: 'link-watch', text, stickers: [], silent: !watch.speakOn() });
+    if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', { text, stickers: [] });
+    await ai.record('assistant', text, { via: 'ajing', source });
+    pro.lastSaid = Date.now();
+    return { ok: true };
+  }
   if (source === 'reminder') {
     send('ai', { type: 'reminder', text, stickers: st, task: text });
     try {
@@ -746,6 +779,74 @@ async function linkLate(d) {
   if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('ai:proactive', { text, stickers: st });
   await ai.record('assistant', text || '（发了一个表情）', { via: 'ajing', late: true, ...(st.length ? { stickers: st } : {}) });
 }
+// 「她指他点」: she points at a moment; the bubble offers 「跳过去」, and only your click moves the video
+let pointNow = null;     // { ref, t, timer }
+function linkPoint(d, f) {
+  if (d.expires_at && Date.now() > Number(d.expires_at)) return { ok: false, code: 'expired' };
+  const at = watch.position();
+  if (!at || (d.bvid && d.bvid !== at.bvid)) return { ok: false, code: 'stale' };
+  if (pointNow) clearTimeout(pointNow.timer);
+  const ref = f.id;
+  pointNow = { ref, t: Number(d.t) || 0, timer: setTimeout(() => {
+    if (pointNow && pointNow.ref === ref) { pointNow = null; link.send('event.point', { ref, action: 'ignored' }, { ack: true }); }
+  }, 15000) };
+  send('ai', { type: 'point', ref, text: String(d.text || '这段你看看～').slice(0, 60), t: pointNow.t });
+  return { ok: true };
+}
+on('watch:point-jump', (_e, ref) => {
+  if (!pointNow || pointNow.ref !== ref) return;
+  clearTimeout(pointNow.timer);
+  watch.seek(pointNow.t);
+  link.send('event.point', { ref, action: 'jumped' }, { ack: true });
+  pointNow = null;
+});
+// typing in the chat box: she holds back while you're writing (chatty mode); same state at most once per 5 s
+let typingLast = { active: false, at: 0 };
+on('chat:typing', (_e, active) => {
+  active = !!active;
+  if (!link.feature('watch')) return;
+  if (active === typingLast.active && Date.now() - typingLast.at < 5000) return;
+  typingLast = { active, at: Date.now() };
+  link.send('event.typing', { active });
+});
+
+// ---------- screen capture problems ----------
+const SCREEN_PANE = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
+function captureError(e) {
+  if (!isMac) return '截屏失败：' + e.message;
+  return '截屏失败：' + e.message + '（Mac 要在「系统设置 → 隐私与安全性 → 录屏与系统录音」里允许 ClaudePet。如果已经开着，可能是给旧版本开的：把 ClaudePet 删掉（「−」）再加回来（「+」），然后重启她）';
+}
+// a Mac that says the permission is on but gives no picture: the permission belongs to an older build. Said once a run.
+let screenHinted = false;
+function screenHint(e) {
+  if (!isMac || screenHinted) return;
+  let status = '';
+  try { status = systemPreferences.getMediaAccessStatus('screen'); } catch (_) {}
+  if (status === 'granted' && !/Failed to get sources/i.test(String((e && e.message) || ''))) return;
+  screenHinted = true;
+  send('ai', { type: 'hint', action: 'screen-settings', text: '我看不到你的屏幕……Mac 的录屏权限可能是给旧版本开的。去设置里把 ClaudePet 删掉再加回来，然后重启我就好～' });
+}
+on('ui:open-screen-settings', () => { if (isMac) shell.openExternal(SCREEN_PANE).catch(() => {}); });
+// a screenshot for her (chat.send.images): JPEG, long side <= 1600 px, <= 700 KB
+function imagePart(dataUrl) {
+  try {
+    let img = nativeImage.createFromDataURL(String(dataUrl || ''));
+    if (img.isEmpty()) return null;
+    const { width, height } = img.getSize();
+    const scale = Math.min(1, 1600 / Math.max(width, height));
+    if (scale < 1) img = img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'good' });
+    for (const q of [80, 70, 60, 50, 40]) {
+      const buf = img.toJPEG(q);
+      if (buf.length <= 700 * 1024) return { mime: 'image/jpeg', sha256: require('crypto').createHash('sha256').update(buf).digest('hex'), size: buf.length, data: buf.toString('base64') };
+    }
+  } catch (e) { logError('capture', e); }
+  return null;
+}
+handle('watch:get', () => watch.status());
+handle('watch:set', (_e, s) => watch.setConfig(s || {}));
+handle('watch:script', () => watch.script());
+handle('watch:new-key', () => watch.newKey());
+
 // a few recent link events (types, ids, counts only) for the diagnostics report
 const linkLog = [];
 const linkNote = (m) => { linkLog.push(`${new Date().toISOString().slice(11, 19)} ${m}`); if (linkLog.length > 40) linkLog.shift(); };
@@ -933,6 +1034,8 @@ async function diagnosticsText() {
 
   sec('连接阿鲸（AstrBot）');
   block(safe(() => link.diagnostics()));
+  sec('一起看');
+  block(safe(() => { const w = watch.status(); return { 开着: w.enabled, 接口开着: w.listening, 端口: w.port, 档位: w.mode, 话多每小时: w.hourly_max, 念出来: w.speak, 脚本上次来: w.scriptSeenAt ? when(w.scriptSeenAt) : '没来过', 正在看: !!w.watching, 阿鲸那边支持: w.herSide, 出错: w.error || '' }; }));
   if (linkLog.length) kv('最近的连接记录', '\n' + linkLog.slice(-15).join('\n'));
 
   sec('语音');
@@ -1038,8 +1141,10 @@ app.whenReady().then(() => {
   link.init({
     userData: app.getPath('userData'), safeStorage, appVersion: app.getVersion(), log: linkNote,
     onSay: (d) => linkSay(d), onLate: (d) => linkLate(d).catch((e) => logError('link:late', e)),
-    onStatus: () => broadcast('link:status', link.getConfig()),
+    onStatus: () => { broadcast('link:status', link.getConfig()); broadcast('watch:status', watch.status()); },
+    onMode: (d) => watch.applyMode(d), onPoint: (d, f) => linkPoint(d, f), onOnline: () => watch.tellMode('connect'),
   });
+  watch.init({ userData: app.getPath('userData'), link, log: linkNote, onChange: (st) => broadcast('watch:status', st) }).catch((e) => logError('watch', e));
   ai.setLinkMemory(() => link.offlinePrompt());
   // when we met (today first / last time, on which computer) is shared through the memory folder: note this start,
   // and keep noting it every few minutes while the user is at the computer
@@ -1062,11 +1167,11 @@ app.whenReady().then(() => {
   screen.on('display-metrics-changed', () => send('cmd', 'display-changed'));
   if (process.env.PET_TEST) {
     global.__pet = { speakUp, pro, checkReminders, reminders, lookAndComment, frontApp, captureScreen, voice, openChat, chatWin: () => chatWin, settingsWin: () => settingsWin, openSettings, setOutfit, send, settings: () => settings, stickers, pushSettings, ai,
-      lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu, link, careHeard };
+      lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu, link, careHeard, watch, linkPoint, imagePart };
     require(process.env.PET_TEST)(() => win);
   }
   screen.on('display-removed', () => send('cmd', 'display-changed'));
 });
 
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { ai.abort(); link.stop(); });
+app.on('before-quit', () => { ai.abort(); link.stop(); watch.stop(); });

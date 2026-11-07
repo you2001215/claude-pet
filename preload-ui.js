@@ -50,4 +50,12 @@ contextBridge.exposeInMainWorld('ui', {
   linkPair: (code) => ipcRenderer.invoke('link:pair', String(code || '')),
   linkUnpair: () => ipcRenderer.invoke('link:unpair'),
   onLinkStatus: (fn) => ipcRenderer.on('link:status', (_e, c) => fn(c)),
+  // watching together
+  watchGet: () => ipcRenderer.invoke('watch:get'),
+  watchSet: (s) => ipcRenderer.invoke('watch:set', s),
+  watchScript: () => ipcRenderer.invoke('watch:script'),
+  watchNewKey: () => ipcRenderer.invoke('watch:new-key'),
+  onWatchStatus: (fn) => ipcRenderer.on('watch:status', (_e, s) => fn(s)),
+  typing: (active) => ipcRenderer.send('chat:typing', !!active),
+  openScreenSettings: () => ipcRenderer.send('ui:open-screen-settings'),
 });

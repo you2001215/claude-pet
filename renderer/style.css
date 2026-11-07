@@ -72,6 +72,22 @@ html, body {
   border-radius: 8px;
 }
 
+/* a button in the bubble: 「跳过去」 when she points at a moment, 「打开系统设置」 when a permission is missing */
+#bubble-act[hidden] { display: none !important; }
+#bubble-act {
+  display: block;
+  margin: 6px auto 0;
+  padding: 3px 12px;
+  border: 1.5px solid #2f4a8a;
+  border-radius: 10px;
+  background: #2f4a8a;
+  color: #fffaf2;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+#bubble-act:hover { background: #3d5ea8; }
+
 #bubble.hidden {
   opacity: 0;
   transform: scale(0.85);

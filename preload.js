@@ -22,4 +22,6 @@ contextBridge.exposeInMainWorld('pet', {
   speakLine: (text) => ipcRenderer.send('voice:line', String(text || '')),
   whisperAI: (ctx) => ipcRenderer.invoke('ai:whisper', ctx),
   voiceStop: () => ipcRenderer.send('voice:stop'),
+  pointJump: (ref) => ipcRenderer.send('watch:point-jump', String(ref || '')),
+  openScreenSettings: () => ipcRenderer.send('ui:open-screen-settings'),
 });

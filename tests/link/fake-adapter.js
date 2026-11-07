@@ -99,7 +99,7 @@ class FakeAdapter {
         ws.on('close', () => { if (this.conns.get(dev.id) === ws) this.conns.delete(dev.id); });
         ws.send(JSON.stringify(frame('welcome', {
           proto: 1, device_id: dev.id, ...(token ? { token } : {}), server_time: Date.now(),
-          limits: { text_max: 4000, frame_max: 1048576, batch_max: this.opts.batchMax || 200 }, reply_timeout_s: this.opts.replyTimeoutS, features: [],
+          limits: { text_max: 4000, frame_max: 1048576, batch_max: this.opts.batchMax || 200 }, reply_timeout_s: this.opts.replyTimeoutS, features: this.opts.features || [],
         })));
         return;
       }
@@ -132,6 +132,12 @@ class FakeAdapter {
       case 'event.care':
         if (!this.seen.has(f.id)) this.seen.add(f.id);
         return this._ack(ws, f.id);
+      case 'event.watch':       // only start / ended / leave want an ack (section 16.3)
+        if (['start', 'ended', 'leave'].includes(d.kind)) return this._ack(ws, f.id);
+        return;
+      case 'event.mode': case 'event.point': case 'event.screen':
+        return this._ack(ws, f.id);
+      case 'event.typing': return;
       default: // unknown types are ignored
     }
   }
