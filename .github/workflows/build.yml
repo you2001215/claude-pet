@@ -151,6 +151,8 @@ jobs:
         env:
           MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
           MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          # the owner's own builds must be signed with her certificate (11-08): no ad-hoc package from this repo
+          REQUIRE_CERT: ${{ github.repository == 'you2001215/claude-pet' && github.event_name != 'pull_request' }}
         run: bash scripts/mac-cert.sh
       - name: 用主人的证书签名，并检查 designated requirement
         if: steps.cert.outputs.mode == 'real'

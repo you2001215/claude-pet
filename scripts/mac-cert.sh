@@ -23,6 +23,12 @@ if [ -n "${MAC_CERT_P12:-}" ] && [ -n "${MAC_CERT_PASSWORD:-}" ]; then
     exit 1
   fi
   P12PASS="$MAC_CERT_PASSWORD"
+elif [ "${REQUIRE_CERT:-}" = "true" ]; then
+  # the owner's own repository: never fall back to an ad-hoc package without saying so
+  [ -z "${MAC_CERT_P12:-}" ] && echo "::error::这次打包读不到 MAC_CERT_P12（是空的）。请到 GitHub 仓库 Settings → Secrets and variables → Actions 的「Secrets」标签页里看，「Repository secrets」下面要有 MAC_CERT_P12（名字全大写、没有空格）。存在「Variables」标签页、「Environment secrets」或 Codespaces / Dependabot 页面里的，打包读不到。"
+  [ -z "${MAC_CERT_PASSWORD:-}" ] && echo "::error::这次打包读不到 MAC_CERT_PASSWORD（是空的）。位置要求同上：Actions 的 Repository secrets。"
+  echo "::error::读不到证书，Mac 版这次不打包（不会退回旧的 ad-hoc 签名）"
+  exit 1
 else
   MODE=rehearsal
   cat > "$T/pet-cert.cnf" <<'CNF'
