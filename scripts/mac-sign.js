@@ -7,7 +7,7 @@
 // requirement is `identifier "com.fanmade.claudepet" and certificate leaf = H"<sha1>"` and stays the same.
 // `check` fails (no package) when the requirement is anything else, or names another certificate than expected.
 'use strict';
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const fs = require('fs');
 
 const APP_ID = 'com.fanmade.claudepet';
@@ -42,6 +42,10 @@ function check() {
       if (want && want !== sha1) die(`certificate changed: expected ${want} (${extra}), got ${sha1}. The owner would have to grant the permissions again.`);
     } else console.log(`::notice::first build with this certificate; its sha1 is ${sha1} — commit it to ${extra} so a changed certificate is caught`);
   }
+  // the certificate's name, for the log only (codesign -dvv writes it to stderr)
+  const info = spawnSync('codesign', ['-dvv', app], { encoding: 'utf8' });
+  const who = `${info.stdout || ''}${info.stderr || ''}`.split('\n').filter((l) => l.startsWith('Authority=')).map((l) => l.slice(10));
+  console.log(`certificate: ${who.join(' / ') || '(not shown)'}`);
   console.log(dr);
 }
 
