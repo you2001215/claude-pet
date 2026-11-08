@@ -16,7 +16,12 @@ security unlock-keychain -p "$KCPASS" "$KC"
 
 if [ -n "${MAC_CERT_P12:-}" ] && [ -n "${MAC_CERT_PASSWORD:-}" ]; then
   MODE=real
-  printf '%s' "$MAC_CERT_P12" | base64 --decode > "$T/pet-cert.p12"
+  # the secret has to be the base64 of the .p12 (what `base64 -i ClaudePet.p12 | pbcopy` puts on the clipboard),
+  # not the command itself: say so plainly instead of failing somewhere further down
+  if ! printf '%s' "$MAC_CERT_P12" | tr -d ' \n\r' | base64 --decode > "$T/pet-cert.p12" 2>/dev/null || [ "$(wc -c < "$T/pet-cert.p12")" -lt 500 ]; then
+    echo "::error::MAC_CERT_P12 不是证书的 base64（解不出 .p12）。请重新导出证书，在终端运行 base64 -i ~/Desktop/ClaudePet.p12 | pbcopy，再到 GitHub 的 MAC_CERT_P12 里粘贴（应该是一大串乱码，不是那行命令）"
+    exit 1
+  fi
   P12PASS="$MAC_CERT_PASSWORD"
 else
   MODE=rehearsal
@@ -38,7 +43,11 @@ CNF
   rm -f "$T/pet-key.pem" "$T/pet-cert.cnf"
 fi
 
-security import "$T/pet-cert.p12" -k "$KC" -P "$P12PASS" -T /usr/bin/codesign >/dev/null
+if ! security import "$T/pet-cert.p12" -k "$KC" -P "$P12PASS" -T /usr/bin/codesign >/dev/null; then
+  rm -f "$T/pet-cert.p12"
+  echo "::error::证书导不进去：多半是 MAC_CERT_PASSWORD 和导出 .p12 时设的密码不一样（或者 .p12 坏了）"
+  exit 1
+fi
 rm -f "$T/pet-cert.p12"
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KC" >/dev/null
 # search this keychain too (keep the others)

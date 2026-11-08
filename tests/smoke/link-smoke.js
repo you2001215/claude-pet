@@ -163,7 +163,8 @@ module.exports = async (getWin) => {
       const rest = await P.speakUp('rest', { activeMin: 50 });
       const b = await pet();
       const whisper = await w.webContents.executeJavaScript('window.pet.whisperAI({ action: "" })');
-      return { ok: chat === false && back === false && rest === true && whisper && whisper.reason === 'linked', detail: `chat=${chat} return=${back} rest=${rest} bubble=${b} whisper=${JSON.stringify(whisper)}` };
+      // 'away' when nobody has touched this test machine for 10 minutes: the AI stays quiet either way
+      return { ok: chat === false && back === false && rest === true && whisper && ['linked', 'away'].includes(whisper.reason), detail: `chat=${chat} return=${back} rest=${rest} bubble=${b} whisper=${JSON.stringify(whisper)}` };
     });
 
     await check('深夜问睡觉：报给阿鲸、两边合起来算', async () => {
