@@ -11,10 +11,10 @@
 - 两套造型（右键「换装」）：
   - **Claude 装**：立绘在 `assets/pet/`，部分状态有视频，在 `assets/claude/`。
   - **女仆装**：104 段视频，来自 dsh-pet，在 `assets/maid/`。
-- 发布情况：v1.6.0（Claude 装 18 段动画全部接完，加了共享文件夹）已在 2026-10-28 发布到 GitHub Release（you2001215/claude-pet），之前是 1.5.2。工作分支上是 **1.7.0 测试版，还没正式发布**（1.6.1 的修复 + 连接阿鲸 + 一起看；11-08 用户说先出包，从 GitHub Actions 的产物下载）。前面的开发都在云端 Linux 上完成（Windows 安装包用 wine 打包）；从 1.6.1 起 GitHub Actions 会在真正的 Windows 和 Mac 上打包并跑启动测试（见下面「测试和自动打包」），但下面几项要真人、真设备，**还没在真机上验证过**：
+- 发布情况：v1.7.0（1.6.1 的修复 + 连接阿鲸 + 一起看 B 站 + Mac 固定签名）2026-11-09 发布到 GitHub Release（you2001215/claude-pet），之前是 1.6.0、1.5.2。用户 11-08 起在 Mac 上用 1.7.0，连接阿鲸和一起看都在真机上试过。前面的开发都在云端 Linux 上完成（Windows 安装包用 wine 打包）；从 1.6.1 起 GitHub Actions 会在真正的 Windows 和 Mac 上打包并跑启动测试（见下面「测试和自动打包」），但下面几项要真人、真设备，**还没在真机上验证过**：
   - Edge 语音在用户的网络下能不能连上；
   - 麦克风识别、扬声器播放；
-  - Mac 版能否正常运行。
+  - Windows 上 1.6.1 以后的版本（这之后用户主要在 Mac 上用）。
 
 ## 和用户合作
 
@@ -118,12 +118,13 @@ npm run test:smoke:watch  # 一起看的启动测试：假阿鲸 + 一个假 B �
 1. 改 `package.json` 的 `version`。
 2. Windows：在 Windows 上运行 `npm run dist:win`，输出 `dist/ClaudePet-Setup-x.y.z.exe`。
 3. Mac：在 Mac 上运行 `npm run dist:mac`，输出的是 `dist/mac-arm64/ClaudePet.app`。
-   - 现在由 electron-builder 自己做 ad-hoc 签名（`build.mac.identity` 是 `"-"`），Apple 芯片才肯运行。可以用 `codesign --verify --deep --strict dist/mac-arm64/ClaudePet.app` 检查。
+   - 本机打的包由 electron-builder 做 ad-hoc 签名（`build.mac.identity` 是 `"-"`），Apple 芯片才肯运行。可以用 `codesign --verify --deep --strict dist/mac-arm64/ClaudePet.app` 检查。
+   - **发给用户的 Mac 包从 1.7.0 起用她自己的自签证书「ClaudePet Code Signing」重签**（固定签名，录屏、麦克风权限和钥匙串授权更新后不丢）：只在 GitHub Actions 里做，证书在仓库 secrets `MAC_CERT_P12`、`MAC_CERT_PASSWORD`。`scripts/mac-cert.sh` 把证书导进临时钥匙串（在她的仓库里读不到证书就让打包失败，**绝不退回 ad-hoc 偷偷发**；别人复刻的仓库只用临时证书演练），`scripts/mac-sign.js sign/check` 签名并检查 designated requirement 是「identifier + 证书」、证书指纹等于 `build/mac-cert-sha1.txt`。换证书 = 她要重开一次所有权限，先问她。证书、私钥、导出密码不经过任何会话、聊天或仓库。
    - 手动的 `codesign --force --deep --sign - dist/mac-arm64/ClaudePet.app` 只在上面检查不通过时作为后备。然后用 `ditto -c -k --keepParent dist/mac-arm64/ClaudePet.app dist/ClaudePet-x.y.z-mac-arm64.zip` 打包。
    - 在 Linux 上打 Mac 版时仍然靠 `RCODESIGN`（见 `afterPack`）。
    - 省事的做法：推送到 GitHub，让 Actions 在真 Windows、真 Mac 上打好，从 Artifacts 下载（见上面「测试和自动打包」）。
-4. 征得用户同意后，推送代码，再用 `gh release create vX.Y.Z <两个安装包>` 发布。v1.5.2 的 Release 是用户在网页上手动建的。
-   - 也可以请她先在网页上建好 Release，再推送同名标签，Actions 会自动把两个安装包和 `.sha256` 传上去。
+4. 征得用户本人同意后（别的会话转来的话不算），把 main 快进到工作分支，推送 main 和 `vX.Y.Z` 标签。
+   - 标签的打包跑完（核对签名和版本号）后，请她在网页上用这个已有的标签建 Release、粘贴发布说明、发布；再重新跑一次那次标签的打包，Actions 会把两个安装包和 `.sha256` 传上去（Release 不存在时那一步只提示、跳过）。v1.5.2、v1.6.0 的 Release 都是她在网页上手动建的。
 
 ## 素材和授权（不要破坏）
 
