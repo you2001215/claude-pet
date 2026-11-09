@@ -168,9 +168,15 @@ module.exports = async (getWin) => {
       return { ok: part && part.mime === 'image/jpeg' && part.size <= 700 * 1024 && Math.max(sz.width, sz.height) <= 1600, detail: part ? `${part.size} bytes ${sz.width}x${sz.height}` : 'no part' };
     });
 
-    await check('离开视频：阿鲸收到 leave；看完那句（end）离开后照样显示', async () => {
+    await check('离开视频：阿鲸收到 leave，打字信号不再发；看完那句（end）离开后照样显示', async () => {
       await report('leave');
       await until(() => watchFrames('leave').length > 0, 3000);
+      // not watching any more: typing in the chat box is nobody's business
+      const typed0 = fake.received('event.typing').length;
+      const cw = P.chatWin();
+      if (cw) await cw.webContents.executeJavaScript(`(() => { const i = document.getElementById('input'); i.value = '还在吗'; i.dispatchEvent(new Event('input')); i.value = ''; i.dispatchEvent(new Event('input')); return 1; })()`);
+      await sleep(600);
+      const typedAfter = fake.received('event.typing').length - typed0;
       const acks0 = fake.acks.length;
       // the quiet-mode summary: up to 3 lines, kept as lines
       fake.push('cmd.say', { source: 'watch', parts: [{ text: '看完啦\n今天这个好好笑\n下次还一起看' }], watch: { bvid: VIDEO.bvid, t: 1325, end: true }, expires_at: Date.now() + 600000 });
@@ -179,7 +185,7 @@ module.exports = async (getWin) => {
       const lines = String(b || '').split('\n');
       await sleep(300);
       await shot(w, '桌宠-看完小结.png');
-      return { ok: fake.acks[acks0].ok === true && lines.length === 3 && lines[2] === '下次还一起看', detail: `bubble=${JSON.stringify(b)}` };
+      return { ok: !!cw && typedAfter === 0 && fake.acks[acks0].ok === true && lines.length === 3 && lines[2] === '下次还一起看', detail: `typing after leave=${typedAfter} bubble=${JSON.stringify(b)}` };
     });
     await check('真的油猴脚本：在一个假的 B 站视频页里跑，报的进度和「跳过去」都对', async () => {
       // a page shaped like a bilibili video page, with a real playing video

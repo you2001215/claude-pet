@@ -805,6 +805,8 @@ let typingLast = { active: false, at: 0 };
 on('chat:typing', (_e, active) => {
   active = !!active;
   if (!link.feature('watch')) return;
+  // only while a video is being watched (16.5); "stopped" still goes out when "typing" did
+  if (active ? !watch.position() : !typingLast.active) return;
   if (active === typingLast.active && Date.now() - typingLast.at < 5000) return;
   typingLast = { active, at: Date.now() };
   link.send('event.typing', { active });
