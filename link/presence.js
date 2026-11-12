@@ -26,6 +26,7 @@ class Presence {
     this.state = 'here'; this.why = 'active'; this.awaySince = 0; this.watching = false;
     this.front = null; this.idle = 0;
     this.sentKey = ''; this.sentAt = 0; this.started = false;
+    this.backAwayS = 0;           // came back while the link was down: told with the next `start`
   }
   get here() { return this.state === 'here'; }
 
@@ -48,6 +49,7 @@ class Presence {
       else awayS = this.awaySince ? Math.max(0, Math.round((t - this.awaySince) / 1000)) : 0;
       this.state = state; this.why = why;
       if (this.started) this._send(why, awayS);
+      else this.backAwayS = state === 'here' ? awayS : 0;
       return;
     }
     this.why = why;
@@ -59,7 +61,11 @@ class Presence {
     }
   }
   // right after welcome: the current state once (17.2 `why: "start"`)
-  start() { this.started = true; this._send('start', 0); }
+  start() {
+    this.started = true;
+    this._send('start', this.state === 'here' ? this.backAwayS : 0);
+    this.backAwayS = 0;
+  }
   stop() { this.started = false; }
 
   _key() { return JSON.stringify([this.state, this.watching, this.front]); }

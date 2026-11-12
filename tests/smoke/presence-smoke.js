@@ -78,8 +78,8 @@ module.exports = async (getWin) => {
 
     await check('锁屏立刻算不在（不带程序名）；解锁回来报离开了多久', async () => {
       const n0 = presenceFrames().length;
-      P.sys.locked = true; await P.presenceTick();
-      const away = await until(() => presenceFrames()[n0], 3000);
+      P.sys.locked = true; P.presenceAwayNow();                 // what the lock-screen event does: at once, no waiting
+      const away = presenceFrames()[n0] || await until(() => presenceFrames()[n0], 3000);
       await sleep(1100);
       P.sys.locked = false; await P.presenceTick();
       const back = await until(() => presenceFrames()[n0 + 1], 3000);

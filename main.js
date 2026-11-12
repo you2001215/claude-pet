@@ -900,14 +900,21 @@ async function presenceTick() {
     presenceLast = t;
     if (!link.linked()) { pushMood(); return; }
     const idle = sys.idle != null ? sys.idle : powerMonitor.getSystemIdleTime();
-    const watching = await videoPlaying(idle);
-    const front = link.feature('presence') && idle < AWAY_IDLE_S ? await frontForHer() : null;
+    const gone = sys.locked || sys.asleep;          // away whatever else: no need to look at videos or windows
+    const watching = gone ? false : await videoPlaying(idle);
+    const front = !gone && link.feature('presence') && idle < AWAY_IDLE_S ? await frontForHer() : null;
     presence.sample({ idle_s: idle, locked: sys.locked, asleep: sys.asleep, watching, front });
     if (presence.here && held.size) releaseHeld();
     for (const id of held.expire()) link.send('event.say_seen', { id, shown: false, at: Date.now() });
     feelings.tick(dt, { here: presence.here, watching, quiet: !!link.quietUntil() });
     pushMood();
   } catch (e) { logError('presence', e); } finally { presenceBusy = false; }
+}
+// locked or asleep: "away" goes out at once, before the network does (17.2); no waiting for a check in progress
+function presenceAwayNow() {
+  if (!link.linked()) return;
+  const idle = sys.idle != null ? sys.idle : powerMonitor.getSystemIdleTime();
+  try { presence.sample({ idle_s: idle, locked: sys.locked, asleep: sys.asleep, watching: false, front: null }); } catch (e) { logError('presence', e); }
 }
 // connected (again): tell her where the owner is, if her side wants to know
 function presenceOnline() {
@@ -1333,9 +1340,9 @@ app.whenReady().then(() => {
   powerMonitor.on('resume', () => setTimeout(checkReminders, 3000));
   powerMonitor.on('unlock-screen', () => setTimeout(checkReminders, 1500));
   // at the computer or not (section 17.2): locking and sleeping count at once
-  powerMonitor.on('lock-screen', () => { sys.locked = true; presenceTick(); });
+  powerMonitor.on('lock-screen', () => { sys.locked = true; presenceAwayNow(); });
   powerMonitor.on('unlock-screen', () => { sys.locked = false; presenceTick(); });
-  powerMonitor.on('suspend', () => { sys.asleep = true; presenceTick(); });
+  powerMonitor.on('suspend', () => { sys.asleep = true; presenceAwayNow(); });
   powerMonitor.on('resume', () => { sys.asleep = false; presenceTick(); });
   setInterval(presenceTick, 5000);
   if (isWin) app.setAppUserModelId('com.fanmade.claudepet');
@@ -1346,7 +1353,7 @@ app.whenReady().then(() => {
   if (process.env.PET_TEST) {
     global.__pet = { speakUp, pro, checkReminders, reminders, lookAndComment, frontApp, captureScreen, voice, openChat, chatWin: () => chatWin, settingsWin: () => settingsWin, openSettings, setOutfit, send, settings: () => settings, stickers, pushSettings, ai,
       lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu, link, careHeard, watch, linkPoint, imagePart,
-      presence, feelings, held, presenceTick, sys, mood: () => mood, frontCheck, videoCheck };
+      presence, feelings, held, presenceTick, presenceAwayNow, sys, mood: () => mood, frontCheck, videoCheck };
     require(process.env.PET_TEST)(() => win);
   }
   screen.on('display-removed', () => send('cmd', 'display-changed'));

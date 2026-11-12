@@ -35,6 +35,20 @@ test('presence: start reports the current state once; lock and sleep count at on
   assert.strictEqual(sent[3].why, 'sleep');
 });
 
+test('presence: away while the link was down, back before it came up: the next start says how long', () => {
+  const { c, p, sent } = presence();
+  p.start();
+  c.add(5000); p.sample({ idle_s: 0, asleep: true });          // away goes out before the network does
+  assert.deepStrictEqual([sent[1].state, sent[1].why], ['away', 'sleep']);
+  p.stop();                                                     // the link drops while asleep
+  c.add(90 * 60000); p.sample({ idle_s: 2 });                   // awake again, not connected yet
+  assert.strictEqual(sent.length, 2, 'nothing while disconnected');
+  p.start();
+  assert.deepStrictEqual([sent[2].state, sent[2].why, sent[2].away_s], ['here', 'start', 90 * 60]);
+  p.stop(); p.start();
+  assert.strictEqual(sent[3].away_s, 0, 'only once');
+});
+
 test('presence: 10 minutes idle is away, unless a video plays; the idle time counts from the last input', () => {
   const { c, p, sent } = presence();
   p.start();
