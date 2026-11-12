@@ -168,7 +168,7 @@ module.exports = async (getWin) => {
     });
 
     await check('深夜问睡觉：报给阿鲸、两边合起来算', async () => {
-      const slot = '2026-11-06/night';
+      const slot = `${require('../../link/protocol').careDay()}/night`;   // today: counts older than 3 days are forgotten
       fake.push('event.care', { kind: 'sleep', slot, action: 'state', asked_qq: 1, asked_desktop: 0, answered: false, stopped: false, limit: 2 });
       await sleep(300);
       const before = L.careAllowed('sleep', slot);

@@ -13,6 +13,8 @@ const P = require('../link/protocol');
 
 const BOT = JSON.parse(fs.readFileSync(path.join(__dirname, 'link', 'bot-frames.json'), 'utf8'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// a care slot's day moves with the frame's time, like its ts (the pet forgets counts older than 3 days)
+const shiftSlot = (slot, d) => String(slot).replace(/^(\d{4}-\d\d-\d\d)/, (day) => P.careDay(Date.parse(day + 'T12:00:00') + d));
 async function until(fn, ms = 3000) { const end = Date.now() + ms; while (Date.now() < end) { if (fn()) return; await sleep(10); } throw new Error('timeout'); }
 const fakeSafe = {
   isEncryptionAvailable: () => true,
@@ -34,6 +36,7 @@ async function replayServer() {
     if (g.data.expires_at) g.data.expires_at += d;
     if (g.data.made_at) g.data.made_at += d;
     if (g.data.server_time) g.data.server_time += d;
+    if (g.data.slot) g.data.slot = shiftSlot(g.data.slot, d);
     return g;
   };
   wss.on('connection', (ws) => {
@@ -56,7 +59,7 @@ async function replayServer() {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return {
-    url: `ws://127.0.0.1:${server.address().port}/desktop/v1`, got,
+    url: `ws://127.0.0.1:${server.address().port}/desktop/v1`, got, now,
     send: (name) => sock.send(JSON.stringify(shift(BOT[name]))),
     acks: () => got.filter((f) => f.type === 'ack').map((f) => f.data),
     close: async () => { for (const c of wss.clients) c.terminate(); await new Promise((r) => wss.close(r)); await new Promise((r) => server.close(r)); },
@@ -104,9 +107,11 @@ test("the bot's own frames: welcome, chat.done, chat.error, cmd.say (reminder, s
     // event.care state: QQ 0 + desktop 1 of 2 -> one more is allowed
     srv.send('event.care state');
     await until(() => srv.acks().length === 3);
-    assert.ok(link.careAllowed('sleep', '2026-11-06/night'));
-    link.care('sleep', '2026-11-06/night', 'asked');
-    assert.ok(!link.careAllowed('sleep', '2026-11-06/night'), 'and then that was the last one');
+    const careFrame = BOT['event.care state'];
+    const night = shiftSlot(careFrame.data.slot, srv.now - careFrame.ts);
+    assert.ok(link.careAllowed('sleep', night));
+    link.care('sleep', night, 'asked');
+    assert.ok(!link.careAllowed('sleep', night), 'and then that was the last one');
 
     // snapshot.data: kept, filtered counts not needed
     srv.send('snapshot.data');
