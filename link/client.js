@@ -18,7 +18,7 @@ const later = (fn, ms) => { const h = setTimeout(fn, ms); if (h.unref) h.unref()
 const every = (fn, ms) => { const h = setInterval(fn, ms); if (h.unref) h.unref(); return h; };
 const OUTBOX_MAX = 500;
 const ID_PREFIX = { 'event.watch': 'w', 'event.mode': 'o', 'event.typing': 'y', 'event.point': 'q', 'event.screen': 'x',
-  'event.presence': 'p', 'event.emotion': 'f', 'event.say_seen': 'n' };
+  'event.presence': 'p', 'event.emotion': 'f', 'event.say_seen': 'n', 'event.quiet': 'u' };
 // phase ③ commands and the welcome.features entry each one needs (spec 17.1)
 const NEEDS = { 'cmd.mood': 'mood', 'cmd.act': 'act', 'cmd.quiet': 'presence' };
 const SEEN_MAX = 2000;

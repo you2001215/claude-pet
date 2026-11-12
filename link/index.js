@@ -23,7 +23,7 @@ const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 
 const MEDIA_RE = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/;
 
 let dir = '', safe = null, log = () => {}, appVersion = '', hooks = {};
-let cfg = { enabled: false, url: P.DEFAULT_URL, deviceName: '', deviceId: '', token: null, pairedAt: 0, shareApp: true, shareTitle: true, quietUntil: 0 };
+let cfg = { enabled: false, url: P.DEFAULT_URL, deviceName: '', deviceId: '', token: null, pairedAt: 0, shareApp: true, shareTitle: true, quietUntil: 0, quietBy: '' };
 let client = null, snapshot = null;
 
 const file = (n) => path.join(dir, n);
@@ -126,7 +126,7 @@ function getConfig() {
     paired: paired(), deviceTail: cfg.deviceId ? cfg.deviceId.slice(-4) : '', pairedAt: cfg.pairedAt || 0,
     status: client ? client.status : 'off', detail: client ? client.detail : '', snapshotAt: snapshot ? snapshot.made_at || 0 : 0,
     plainToken: !!(cfg.token && cfg.token.plain),
-    shareApp: cfg.shareApp !== false, shareTitle: cfg.shareTitle !== false, quietUntil: quietUntil(),
+    shareApp: cfg.shareApp !== false, shareTitle: cfg.shareTitle !== false, quietUntil: quietUntil(), quietBy: quietBy(),
   };
 }
 
@@ -185,8 +185,10 @@ function saveSnapshot(d) {
 }
 const getSnapshot = () => snapshot;
 
-// 「别吵我」 (cmd.quiet): kept on disk, so a restart stays quiet; until is already capped by the caller
-function setQuiet(until) { cfg.quietUntil = Number(until) || 0; saveCfg(); }
+// 「别吵我」: kept on disk, so a restart stays quiet; until is already capped by the caller.
+// by: 'ajing' (her side confirmed it: QQ is quiet too) or 'pet' (only the pet)
+function setQuiet(until, by = 'ajing') { cfg.quietUntil = Number(until) || 0; cfg.quietBy = cfg.quietUntil ? String(by) : ''; saveCfg(); }
+const quietBy = () => (quietUntil() ? cfg.quietBy || 'ajing' : '');
 function quietUntil() { return cfg.quietUntil > Date.now() ? cfg.quietUntil : 0; }
 
 // ---- images she sends: checked against their sha256, kept by it, served as app://pet/linkmedia/<name>
@@ -229,13 +231,13 @@ function diagnostics() {
     开着: c.enabled, 已配对: c.paired, 状态: c.status + (c.detail ? `（${c.detail}）` : ''), 默认地址: c.url === P.DEFAULT_URL,
     待发: i.outbox || 0, 待补交: i.offline || 0, 丢弃: i.dropped || 0, 看不懂的帧: i.bad || 0, 不认识的类型: i.unknown || 0, 对方没收: i.refused || 0,
     有快照: !!snapshot, 令牌没加密: c.plainToken, 对方支持: client ? client.features.join(',') || '（无）' : '',
-    报程序名: c.shareApp, 报窗口标题: c.shareTitle, 别吵我中: !!c.quietUntil,
+    报程序名: c.shareApp, 报窗口标题: c.shareTitle, 别吵我中: c.quietUntil ? (c.quietBy === 'pet' ? '只有桌宠' : '两边') : '没有',
   };
 }
 
 module.exports = {
   init, getConfig, setConfig, pair, unpair, paired, online, away, linked, offlinePrompt, getSnapshot, toReply, mediaPath, diagnostics,
-  setQuiet, quietUntil,
+  setQuiet, quietUntil, quietBy,
   chat: (text, input, extra) => client.chat(text, input, extra),
   // her side supports this (welcome.features): 'watch', 'images'
   feature: (name) => !!(cfg.enabled && client && client.hasFeature(name)),

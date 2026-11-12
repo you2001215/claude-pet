@@ -138,6 +138,14 @@ class FakeAdapter {
       case 'event.mode': case 'event.point': case 'event.screen':
         return this._ack(ws, f.id);
       case 'event.typing': return;
+      // phase 3: no acks; 「一键别吵我」 is answered with her current quiet time, like her own mute (17.10)
+      case 'event.presence': case 'event.emotion': case 'event.say_seen': return;
+      case 'event.quiet': {
+        if (!(this.opts.features || []).includes('quiet') || this.opts.quietSilent) return;
+        const mins = Math.min(720, Math.max(1, Number(d.minutes) || 0));
+        this.quietUntil = d.action === 'on' ? Date.now() + mins * 60000 : 0;
+        return ws.send(JSON.stringify(frame('cmd.quiet', { until: this.quietUntil })));
+      }
       default: // unknown types are ignored
     }
   }

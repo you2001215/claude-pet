@@ -49,7 +49,7 @@ function finish(extra = {}) {
 
 module.exports = async (getWin) => {
   const hard = setTimeout(() => finish({ timeout: true }), HARD_MS);
-  const fake = await new FakeAdapter({ features: ['presence', 'mood', 'act'], answer: (t) => [{ text: `（假阿鲸）收到：${t}` }] }).start();
+  const fake = await new FakeAdapter({ features: ['presence', 'mood', 'act', 'quiet'], answer: (t) => [{ text: `（假阿鲸）收到：${t}` }] }).start();
   try {
     const P = global.__pet;
     const L = P.link;
@@ -133,6 +133,36 @@ module.exports = async (getWin) => {
       const afterwards = await quietBubble();                   // the control: without quiet time she does mutter
       return { ok: ack && ack.ok && capped && inPet > 0 && !during && stored === until1 && !L.quietUntil() && petCleared === true && !!afterwards,
         detail: `ack=${JSON.stringify(ack)} capped=${capped} during=${JSON.stringify(during)} afterwards=${JSON.stringify(afterwards)}` };
+    });
+
+    await check('一键别吵我（菜单）：发 event.quiet，等阿鲸回 cmd.quiet 才算两边都安静；再点恢复', async () => {
+      const n0 = fake.received('event.quiet').length;
+      P.askQuiet(180);
+      const req = await until(() => fake.received('event.quiet')[n0], 3000);
+      const on = await until(() => L.quietUntil() && L.getConfig().quietBy === 'ajing', 3000);
+      const said = await until(async () => { const t = await bubble(); return t && t.includes('QQ 那边都先不吵你') ? t : ''; }, 4000);
+      const label = P.quietMenuItem().label;
+      const hours = (L.quietUntil() - Date.now()) / 3600000;
+      P.askQuiet(0);
+      const reqOff = await until(() => fake.received('event.quiet')[n0 + 1], 3000);
+      const off = await until(() => !L.quietUntil(), 3000);
+      const back = await until(async () => { const t = await bubble(); return t && t.includes('回来啦') ? t : ''; }, 4000);
+      return { ok: req && req.data.action === 'on' && req.data.minutes === 180 && on && Math.abs(hours - 3) < 0.01 && !!said && /^别吵我中/.test(label)
+          && reqOff && reqOff.data.action === 'off' && off && !!back && P.quietMenuItem().label === '别吵我',
+        detail: `req=${JSON.stringify(req && req.data)} label=${label} said=${said}` };
+    });
+
+    await check('一键别吵我：阿鲸 10 秒没回，就只让桌宠安静，并说清楚 QQ 那边可能还会说话', async () => {
+      fake.opts.quietSilent = true;
+      P.setQuietAskMs(500);
+      try {
+        P.askQuiet(60);
+        const pet = await until(() => L.quietUntil() && L.getConfig().quietBy === 'pet', 3000);
+        const said = await until(async () => { const t = await bubble(); return t && t.includes('阿鲸那边没回') ? t : ''; }, 4000);
+        P.askQuiet(0);
+        const off = await until(() => !L.quietUntil(), 3000);
+        return { ok: !!pet && !!said && !!off, detail: said };
+      } finally { fake.opts.quietSilent = false; P.setQuietAskMs(10000); }
     });
 
     await check('身体刺激：连戳 5 下 → 烦 2；生气时摸头 → 消气、开心 1；重摔 → 委屈 1（1 分钟内不重复）', async () => {

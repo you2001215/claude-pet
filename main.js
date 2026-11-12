@@ -263,6 +263,7 @@ function buildMenu() {
     { label: '说句话', click: () => send('cmd', 'talk') },
     { label: '查 API 余额', click: async () => { const b = await ai.balance(); send('ai', { type: 'notice', text: b.ok ? b.summary : b.error, tier: balanceTier(b) }); } },
     { label: sleeping ? '叫醒她' : '去睡觉', click: () => send('cmd', sleeping ? 'wake' : 'sleep') },
+    quietMenuItem(),
     { type: 'separator' },
     { label: '静音', type: 'checkbox', checked: voice.isMuted(), click: (i) => { voice.setMuted(i.checked); } },
     { label: '自由走动', type: 'checkbox', checked: settings.walk, click: (i) => { settings.walk = i.checked; saveSettings(); pushSettings(); } },
@@ -949,9 +950,42 @@ function linkMood(d, f) {
 // 「别吵我」: until when (capped at 12 hours, kept on disk); 0 = over (17.3)
 function linkQuiet(d) {
   const until = quietUntil(d && d.until);
-  link.setQuiet(until);
-  send('pet:quiet', until);
+  applyQuiet(until, 'ajing');
+  // her answer to the owner's own 「别吵我」 from the menu (17.10): say so now
+  if (quietAsk) { clearTimeout(quietAsk.timer); quietAsk = null; quietSay(until, 'ajing'); }
   return { ok: true };
+}
+function applyQuiet(until, by) { link.setQuiet(until, by); send('pet:quiet', until); refreshTray(); }
+// 「别吵我」 from the menu: both sides when her side takes it (welcome.features "quiet"), otherwise the pet alone.
+// The pet only says "quiet" once her cmd.quiet comes back; 10 s without it, the pet goes quiet by itself and says so.
+let quietAsk = null;
+function askQuiet(minutes) {
+  const on = minutes > 0;
+  const until = on ? quietUntil(Date.now() + minutes * 60000) : 0;
+  if (quietAsk) { clearTimeout(quietAsk.timer); quietAsk = null; }
+  if (link.feature('quiet') && link.send('event.quiet', on ? { action: 'on', minutes } : { action: 'off' })) {
+    quietAsk = { timer: setTimeout(() => { quietAsk = null; applyQuiet(until, 'pet'); quietSay(until, 'nobody'); }, quietAskMs) };
+    return;
+  }
+  applyQuiet(until, 'pet');
+  quietSay(until, link.linked() ? 'notyet' : 'pet');
+}
+let quietAskMs = 10000;
+const hhmm = (t) => { const d = new Date(t); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
+function quietSay(until, how) {
+  let text;
+  if (!until) text = how === 'nobody' ? '好啦，我回来啦～（阿鲸那边没回，QQ 上她可能还在安静）' : '好啦，我回来啦～';
+  else if (how === 'ajing') text = `好～我和 QQ 那边都先不吵你，到 ${hhmm(until)} 再说话`;
+  else if (how === 'nobody') text = `好～我先不吵你，到 ${hhmm(until)}。阿鲸那边没回，QQ 上她可能还会找你`;
+  else if (how === 'notyet') text = `好～我先不吵你，到 ${hhmm(until)}。阿鲸那边还不支持一起安静，QQ 上她可能还会找你`;
+  else text = `好～我先不吵你，到 ${hhmm(until)} 再说话`;
+  send('ai', { type: 'notice', text });
+}
+// the menu item: pick how long, or (while quiet) show until when and click to end it
+function quietMenuItem() {
+  const u = link.quietUntil();
+  if (u) return { label: `别吵我中（到 ${hhmm(u)}）· 点这里恢复`, click: () => askQuiet(0) };
+  return { label: '别吵我', submenu: [[60, '1 小时'], [180, '3 小时'], [720, '12 小时']].map(([m, label]) => ({ label, click: () => askQuiet(m) })) };
 }
 // an action she asks for (17.6): main checks away / too often / expired, the pet window whether it can do it
 let actLastAt = 0;
@@ -1345,6 +1379,9 @@ app.whenReady().then(() => {
   powerMonitor.on('suspend', () => { sys.asleep = true; presenceAwayNow(); });
   powerMonitor.on('resume', () => { sys.asleep = false; presenceTick(); });
   setInterval(presenceTick, 5000);
+  // quiet time over by itself: the menu shows 「别吵我」 again
+  let quietShown = !!link.quietUntil();
+  setInterval(() => { const q = !!link.quietUntil(); if (q !== quietShown) { quietShown = q; refreshTray(); } }, 30000);
   if (isWin) app.setAppUserModelId('com.fanmade.claudepet');
   if (isMac && app.dock) app.dock.hide();
   createWindow();
@@ -1353,7 +1390,7 @@ app.whenReady().then(() => {
   if (process.env.PET_TEST) {
     global.__pet = { speakUp, pro, checkReminders, reminders, lookAndComment, frontApp, captureScreen, voice, openChat, chatWin: () => chatWin, settingsWin: () => settingsWin, openSettings, setOutfit, send, settings: () => settings, stickers, pushSettings, ai,
       lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu, link, careHeard, watch, linkPoint, imagePart,
-      presence, feelings, held, presenceTick, presenceAwayNow, sys, mood: () => mood, frontCheck, videoCheck };
+      presence, feelings, held, presenceTick, presenceAwayNow, sys, askQuiet, quietMenuItem, setQuietAskMs: (ms) => { quietAskMs = ms; }, mood: () => mood, frontCheck, videoCheck };
     require(process.env.PET_TEST)(() => win);
   }
   screen.on('display-removed', () => send('cmd', 'display-changed'));
