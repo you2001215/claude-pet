@@ -22,6 +22,7 @@
     "test:smoke": "node scripts/smoke-test.js",
     "test:smoke:link": "node scripts/smoke-test.js tests/smoke/link-smoke.js",
     "test:smoke:watch": "node scripts/smoke-test.js tests/smoke/watch-smoke.js",
+    "test:smoke:presence": "node scripts/smoke-test.js tests/smoke/presence-smoke.js",
     "dist:win": "node scripts/fetch-sherpa.js win --verify && electron-builder --win",
     "dist:mac": "node scripts/fetch-sherpa.js mac --verify && electron-builder --mac"
   },

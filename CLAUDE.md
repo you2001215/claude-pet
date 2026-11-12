@@ -43,6 +43,7 @@ npm test         # 单元测试（node:test，tests/*.test.js）
 npm run test:smoke   # 启动测试：临时空数据目录 + PET_TEST=tests/smoke/pet-smoke.js，Linux 无屏幕时自动套 xvfb-run
 npm run test:smoke:link   # 连接阿鲸的启动测试：同上，脚本是 tests/smoke/link-smoke.js，连的是假阿鲸（PET_SMOKE_SHOTS=<文件夹> 会存截图）
 npm run test:smoke:watch  # 一起看的启动测试：假阿鲸 + 一个假 B 站页面里跑真的油猴脚本（tests/smoke/watch-smoke.js）
+npm run test:smoke:presence  # 阶段 ③ 的启动测试：在不在电脑前、心情、动作、「别吵我」（tests/smoke/presence-smoke.js，锁屏和空闲时间用测试钩子模拟）
 ```
 
 - **单实例锁：** 程序有单实例锁，而且开发版和安装版共用同一个用户数据目录。已经装好的桌宠在运行时，`npm start` 会直接退出。先在托盘图标里点「退出」。
@@ -79,6 +80,7 @@ npm run test:smoke:watch  # 一起看的启动测试：假阿鲸 + 一个假 B �
 | `store.js` | 安全读写 JSON：先写临时文件（`<文件>.<进程号>-<随机>.tmp`，两个写入方不会撞名）再改名替换，留 `.bak`；读坏的文件改名成 `.broken-日期-时间` 保留，再用 `.bak`；启动时被占用读不出来的文件，之后保存前先另存一份，还读不出来就不覆盖。共享文件夹用异步版（不留 `.bak`，解析出错的消息里不带文件内容）。不依赖 electron |
 | `ai-parse.js` | AI 回复里的控制标记：`visible()` 隐藏 `<memory>`/`<remind>`/`<remind-cancel>`/`<think>`，`parseControl()` 读出来并限量（`LIMITS`），`allowCancel()` 只有用户自己说要取消/改时间才放行取消。不依赖 electron |
 | `link/` | 桌宠 ↔ AstrBot（阿鲸）的桌面连接，照 `docs/桌面连接接口说明.md`：`protocol.js` 消息格式和地址检查，`client.js` 连接、配对、回执和发件箱、重连（不依赖 electron），`index.js` 开关、设备令牌（加密）、快照、图片，`lines.js` 连着时用的固定台词。默认关着。连着时 `main.js` 的聊天走阿鲸，桌宠自己的 AI 不主动开口 |
+| `link/presence.js` | 阶段 ③（接口说明第 17 节），不依赖 electron：`Presence` 判断在不在电脑前（锁屏/睡眠立刻不在，10 分钟没动不在，放视频算在）并决定什么时候报 `event.presence`；`Feelings` 身体刺激（重摔、连戳、摸头消气、两小时没人理）和限量；`Held` 主人刚走开时收下的话；`readMood`/`moodNow`/`quietUntil`。`main.js` 每 5 秒喂一次（`presenceTick`），前台程序和窗口标题按设置里的两个勾决定报不报 |
 | `watch/` | 一起看（阶段 ②，接口说明第 16 节）：`userscript.js` 给 B 站视频页的油猴脚本（只报进度，不读弹幕评论账号，只在主人点「跳过去」时改进度），`server.js` 脚本连的本机接口（只听 127.0.0.1、要口令、拒绝网页），`session.js` 把进度变成 `event.watch`、判断她的话过没过时，`index.js` 设置（`watch.json`）和开关。默认关着；阿鲸那边 `features` 有 `watch` 时才往她那边发 |
 | `reminders.js` | 定时提醒的存取和触发（`parseLocal`、`matches` 可单独测试；electron 只在 `init()` 里加载） |
 | `stickers.js` | 表情包和梗图：`[sticker:名]` 标记、下载缓存、写进提示词里的清单 |
@@ -111,6 +113,7 @@ npm run test:smoke:watch  # 一起看的启动测试：假阿鲸 + 一个假 B �
 - **Kokoro 的文字预处理：** Claude 要写成「克劳德」，DeepSeek 写成「迪普西克」；`13:30` 要转成「13点30分」；字母前的「！」要换掉；括号里的动作描写不念。这些都在 `forKokoro` 和 `cleanForSpeech` 里。
 - **视频片段规格：** 640×360，脚底在 (319, 329)，头顶 y=63。Claude 装从头顶到脚 258 px，和立绘一样大。`process_clip.py` 依赖 Python 的 numpy、pillow、scipy 和 ffmpeg。
 - **改默认人设：** 把旧的那段放进 `OLD_PERSONAS`，老用户才会自动迁移到新人设。
+- **测试里的日期别写死：** 桌宠会忘掉 3 天以前的睡觉吃饭计数（`link/client.js` 的 `_save`），测试里用写死日期的 slot，过几天就会自己失败。用 `P.careDay()` 算当天的。
 - **AI 回复里的控制标记：** `<memory>`、`<remind at="...">`、`<remind-cancel>` 和 `[sticker:名]` 都由程序解析，用户看不到，改提示词时别弄坏格式。
 
 ## 打包和发版

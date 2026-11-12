@@ -132,6 +132,8 @@
   let talkAmp = 0;
   let aiOn = false;
   let fallFlip = 1;
+  // connected to 阿鲸 (phase 3): her mood of the hour, 「别吵我」 until when, and whether this sulk was already patted away
+  let mood = null, quietUntil = 0, calmed = false, touchedAt = 0;
 
   function setState(s, dur) {
     if (maid && CM) {
@@ -205,9 +207,10 @@
   // every few minutes she mutters something on her own
   async function idleWhisper() {
     nextIdleTalk = now() + whisperGap();
-    if (whisperMode === 'off' || bubbleHideAt || bubbleBusy()) return;
+    if (whisperMode === 'off' || bubbleHideAt || bubbleBusy() || Date.now() < quietUntil) return;
     const pool = maid ? L.whisperMaid.concat(L.whisper) : L.idle.concat(L.whisper);
-    const canned = pick(pool);
+    const moodLines = mood && L.mood && L.mood[mood.name];
+    const canned = moodLines && Math.random() < 0.5 ? pick(moodLines) : pick(pool);
     const txt = await whisperLine(maid ? '在桌面上发呆碎碎念' : '', canned);
     if (!txt || bubbleHideAt || bubbleBusy() || ['sleep', 'drag', 'fall'].includes(state)) return;
     if (maid && CM) {
@@ -224,6 +227,12 @@
   }
 
   function interact() { lastInteract = now(); }
+  // the owner touched her (click, pat, drag): "2 hours without anyone paying attention" starts again (spec 17.4)
+  function touched() {
+    const t = Date.now();
+    if (t - touchedAt > 20000) { touchedAt = t; if (P.interacted) P.interacted(); }
+  }
+  const feel = (cause) => { if (P.emotion) P.emotion(cause); };
 
   // ---------------- speech bubble ----------------
   let bubbleHideAt = 0, typing = null;
@@ -628,7 +637,7 @@
           squashV += clamp(impact / 450, 0.6, 3.2);
           if (impact > 650) {
             vel.y = -impact * 0.28; vel.x *= 0.6;
-            if (!update._saidLand) { say(pick(L.dropHard)); update._saidLand = true; }
+            if (!update._saidLand) { say(pick(L.dropHard)); update._saidLand = true; feel('drop'); }
             spawn('sweat', W / 2 + 30 * (S / 0.45), headPoint().y, { vx: 12, vy: -50, max: 0.9 });
           } else {
             vel.x = 0; vel.y = 0;
@@ -722,8 +731,15 @@
             break;
           }
           if (CCM && CCM.talk && ((V && V.speaking) || now() < aiTalkUntil)) { stateDur = stateT + 2; break; }   // keep the talking clip on
-          const r = Math.random();
           let act;
+          // her mood of the hour (from 阿鲸) tips what she does when nothing is going on
+          const mp = moodPick();
+          if (mp === 'stretch' && has('stretch')) { setState('stretch', 2.6); break; }
+          if (mp === 'wave' && has('wave')) { setState('wave', 2.2); break; }
+          if (mp === 'act' && (act = claudeAct())) { playClaudeAct(act); break; }
+          if (mp === 'think' && CCM && CCM.think) { playClaudeAct(CCM.think); break; }
+          if (mp === 'sit' && has('sit')) { sitFlip = 1; setState('sit', rand(12, 30)); break; }
+          const r = Math.random();
           if (cfg.walk && r < 0.45) { dir = Math.random() < 0.5 ? -1 : 1; setState('walk', rand(3, 9)); }
           else if (r < 0.6) {
             lookDir = Math.random() < 0.5 ? -1 : 1;
@@ -742,6 +758,39 @@
     if (state !== 'drag') { theta *= Math.exp(-6 * dt); omega = 0; }
     updateParticles(dt);
     if (!dragging) pushPos();
+  }
+
+  // a little extra for her mood, or '' (then the usual dice)
+  function moodPick() {
+    if (!mood) return '';
+    const r = Math.random();
+    switch (mood.name) {
+      case '无聊': return r < 0.25 ? 'stretch' : '';
+      case '开心': case '得意': case '上头': return r < 0.15 ? 'wave' : r < 0.3 ? 'act' : '';
+      case '委屈': case '担心': return r < 0.25 ? 'think' : r < 0.4 ? 'sit' : '';
+      case '烦': return r < 0.3 ? 'sit' : '';
+      default: return '';
+    }
+  }
+  // an action 阿鲸 asked for (spec 17.6): { ok } or { ok: false, code: 'unknown' | 'busy' }
+  const MAID_ACT = { 挥手打招呼: 'greet', 被点开心: 'clicks', 打哈欠伸懒腰: 'rest', 思考中: 'think', 东张西望: 'turn', 被摸头: 'pat', 到点提醒: 'reminder', 看屏幕: 'looking', 敲键盘: 'working', 说话: 'talk' };
+  function doAct(name) {
+    if (dragging || state === 'drag' || state === 'fall') return { ok: false, code: 'busy' };
+    if (name === '睡觉') { if (!sleeping) goSleep(); return { ok: true }; }
+    if (sleeping) return { ok: false, code: 'busy' };
+    if (name === '待机') { setState('idle', rand(3, 5)); return { ok: true }; }
+    if (name === '原地走路') { if (!cfg.walk) return { ok: false, code: 'busy' }; dir = Math.random() < 0.5 ? -1 : 1; setState('walk', rand(3, 6)); return { ok: true }; }
+    if (name === '傲娇生气') { calmed = false; if (maid && CM) setAct('sulk', CM.sulk); else setState('sulk', 4.5); return { ok: true }; }
+    if (maid && CM) {
+      const c = CM[MAID_ACT[name]];
+      const clip = Array.isArray(c) ? pick(c) : c;
+      if (!clip) return { ok: false, code: 'unknown' };
+      setAct('act', clip);
+      return { ok: true };
+    }
+    if (!CCM || !CCM.duration || !CCM.duration[name]) return { ok: false, code: 'unknown' };
+    if (name === '挥手打招呼' && has('wave')) setState('wave', 2.4); else playClaudeAct(name);
+    return { ok: true };
   }
 
   function goSleep() {
@@ -765,14 +814,17 @@
   // ---------------- reactions ----------------
   function onClick() {
     interact();
+    touched();
     const t = now();
     if (state === 'sleep') { wake(); return; }
     if (state === 'sulk') { say('哼！'); stateDur = Math.max(stateDur, stateT + 2.5); return; }
     pokeTimes = pokeTimes.filter((x) => t - x < 3).concat(t);
     if (pokeTimes.length >= 5) {
       pokeTimes = [];
+      calmed = false;
       if (maid && CM) setAct('sulk', CM.sulk); else setState('sulk', 4.5);
       say(pick(L.sulk));
+      feel('poke');
       spawn('sweat', headPoint().x + 26 * (S / 0.45), headPoint().y, { vx: 10, vy: -40, max: 1 });
       return;
     }
@@ -799,8 +851,19 @@
 
   function onPat() {
     interact();
+    touched();
     if (state === 'sleep') { wake('唔…摸头会醒的啦…'); return; }
-    if (state === 'drag' || state === 'fall' || state === 'sulk') return;
+    if (state === 'drag' || state === 'fall') return;
+    // patted while sulking: she calms down (once per sulk)
+    if (state === 'sulk') {
+      if (calmed) return;
+      calmed = true;
+      setState('pat', 1e9);
+      heartTimer = 0; happyUntil = now() + 1.2;
+      say(pick(L.calm));
+      feel('calm');
+      return;
+    }
     if (state !== 'pat') {
       setState('pat', 1e9);
       heartTimer = 0;
@@ -881,6 +944,7 @@
   function startDrag(cx, cy) {
     dragging = true;
     interact();
+    touched();
     if (sleeping) { sleeping = false; P.sleepState(false); }
     grab = { x: cx, y: cy };
     if (maid && CM) {
@@ -1087,6 +1151,9 @@
     await applyOutfit();
     setTimeout(() => { layout(); syncBounds(true); }, 30);
   });
+  if (P.onMood) P.onMood((m) => { mood = m && m.name ? m : null; });
+  if (P.onQuiet) P.onQuiet((u) => { quietUntil = Number(u) || 0; });
+  if (P.onAct) P.onAct((a) => { let r; try { r = doAct(String((a && a.name) || '')); } catch (_) { r = { ok: false, code: 'busy' }; } P.actDone(a && a.id, r); });
 
   // ---------------- main loop ----------------
   let last = performance.now(), lastRender = 0, t0 = now();
@@ -1105,6 +1172,8 @@
   async function boot() {
     await loadAssets();
     cfg = await P.getSettings();
+    mood = cfg.mood && cfg.mood.name ? cfg.mood : null;
+    quietUntil = Number(cfg.quietUntil) || 0;
     await applyOutfit();
     await syncBounds(true);
     setInterval(() => syncBounds(false).catch(() => {}), 2000);
@@ -1135,6 +1204,7 @@
     get whisperMode() { return whisperMode; },
     get claudeClip() { return claudeVideo() ? CC.current() : ''; },
     claudeAct: (c) => playClaudeAct(c),
+    get mood() { return mood; }, get quietUntil() { return quietUntil; }, doAct: (n) => doAct(n),
     lookClip: () => { if (CCM) { ccAct = CCM.turn[0]; CC.play(ccAct, { restart: true }); setState('look', CC.dur(ccAct) - 0.12); } },
   };
   boot();

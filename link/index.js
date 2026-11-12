@@ -4,7 +4,8 @@
 // electron's safeStorage is passed in, so this file loads in plain Node too (tests).
 //
 // Files in the user-data folder (never in the shared folder, never in a diagnostics report):
-//   link.json          on/off, address, device name, device id, the token (encrypted)
+//   link.json          on/off, address, device name, device id, the token (encrypted), what she may know of the
+//                      front window (shareApp / shareTitle), 「别吵我」 until when (quietUntil)
 //   link-state.json    outbox, offline items, ids seen, sleep/meal counts (link/client.js)
 //   link-snapshot.json the latest snapshot from her, for when she's not there (only the newest one is kept)
 //   link-media/        images she sent, named by sha256
@@ -22,7 +23,7 @@ const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 
 const MEDIA_RE = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/;
 
 let dir = '', safe = null, log = () => {}, appVersion = '', hooks = {};
-let cfg = { enabled: false, url: P.DEFAULT_URL, deviceName: '', deviceId: '', token: null, pairedAt: 0 };
+let cfg = { enabled: false, url: P.DEFAULT_URL, deviceName: '', deviceId: '', token: null, pairedAt: 0, shareApp: true, shareTitle: true, quietUntil: 0 };
 let client = null, snapshot = null;
 
 const file = (n) => path.join(dir, n);
@@ -65,6 +66,9 @@ function makeClient() {
     onSnapshot: (d) => saveSnapshot(d),
     onMode: (d, f) => (hooks.onMode ? hooks.onMode(d, f) : { ok: true }),
     onPoint: (d, f) => (hooks.onPoint ? hooks.onPoint(d, f) : { ok: false, code: 'not_allowed' }),
+    onMood: (d, f) => (hooks.onMood ? hooks.onMood(d, f) : { ok: true }),
+    onAct: (d, f) => (hooks.onAct ? hooks.onAct(d, f) : { ok: false, code: 'unknown' }),
+    onQuiet: (d, f) => (hooks.onQuiet ? hooks.onQuiet(d, f) : { ok: true }),
   });
   client.on('status', (s, detail) => { if (hooks.onStatus) hooks.onStatus(s, detail); if (s === 'online' && hooks.onOnline) hooks.onOnline(); });
   client.on('late', (d) => { if (hooks.onLate) hooks.onLate(d); });
@@ -73,7 +77,8 @@ function makeClient() {
 // o: { userData, safeStorage, appVersion, log, onSay(data) -> { ok, code }, onStatus(status), onLate(chatDone), timers }
 function init(o) {
   dir = o.userData; safe = o.safeStorage || null; appVersion = o.appVersion || ''; log = o.log || log;
-  hooks = { onSay: o.onSay, onStatus: o.onStatus, onLate: o.onLate, onMode: o.onMode, onPoint: o.onPoint, onOnline: o.onOnline, timers: o.timers };
+  hooks = { onSay: o.onSay, onStatus: o.onStatus, onLate: o.onLate, onMode: o.onMode, onPoint: o.onPoint, onOnline: o.onOnline,
+    onMood: o.onMood, onAct: o.onAct, onQuiet: o.onQuiet, timers: o.timers };
   const r = store.readJsonSync(file('link.json'), null);
   if (r && r.data && typeof r.data === 'object') cfg = { ...cfg, ...r.data };
   if (!P.urlOk(cfg.url)) cfg.url = P.DEFAULT_URL;
@@ -121,10 +126,15 @@ function getConfig() {
     paired: paired(), deviceTail: cfg.deviceId ? cfg.deviceId.slice(-4) : '', pairedAt: cfg.pairedAt || 0,
     status: client ? client.status : 'off', detail: client ? client.detail : '', snapshotAt: snapshot ? snapshot.made_at || 0 : 0,
     plainToken: !!(cfg.token && cfg.token.plain),
+    shareApp: cfg.shareApp !== false, shareTitle: cfg.shareTitle !== false, quietUntil: quietUntil(),
   };
 }
 
 function setConfig(s = {}) {
+  // what she may know of the front window: no reconnect for these
+  if (s.shareApp !== undefined) cfg.shareApp = !!s.shareApp;
+  if (s.shareTitle !== undefined) cfg.shareTitle = !!s.shareTitle;
+  if (s.url === undefined && s.deviceName === undefined && s.enabled === undefined) { saveCfg(); return { ok: true, config: getConfig() }; }
   if (s.url !== undefined) {
     const url = String(s.url || '').trim() || P.DEFAULT_URL;
     if (!P.urlOk(url)) return { ok: false, error: '地址要用 ws:// 开头（只能是这台电脑、局域网或组网工具的地址），其他地址要用 wss://' };
@@ -175,6 +185,10 @@ function saveSnapshot(d) {
 }
 const getSnapshot = () => snapshot;
 
+// 「别吵我」 (cmd.quiet): kept on disk, so a restart stays quiet; until is already capped by the caller
+function setQuiet(until) { cfg.quietUntil = Number(until) || 0; saveCfg(); }
+function quietUntil() { return cfg.quietUntil > Date.now() ? cfg.quietUntil : 0; }
+
 // ---- images she sends: checked against their sha256, kept by it, served as app://pet/linkmedia/<name>
 function saveImage(img) {
   if (!img || typeof img.data !== 'string') return null;
@@ -214,12 +228,14 @@ function diagnostics() {
   return {
     开着: c.enabled, 已配对: c.paired, 状态: c.status + (c.detail ? `（${c.detail}）` : ''), 默认地址: c.url === P.DEFAULT_URL,
     待发: i.outbox || 0, 待补交: i.offline || 0, 丢弃: i.dropped || 0, 看不懂的帧: i.bad || 0, 不认识的类型: i.unknown || 0, 对方没收: i.refused || 0,
-    有快照: !!snapshot, 令牌没加密: c.plainToken,
+    有快照: !!snapshot, 令牌没加密: c.plainToken, 对方支持: client ? client.features.join(',') || '（无）' : '',
+    报程序名: c.shareApp, 报窗口标题: c.shareTitle, 别吵我中: !!c.quietUntil,
   };
 }
 
 module.exports = {
   init, getConfig, setConfig, pair, unpair, paired, online, away, linked, offlinePrompt, getSnapshot, toReply, mediaPath, diagnostics,
+  setQuiet, quietUntil,
   chat: (text, input, extra) => client.chat(text, input, extra),
   // her side supports this (welcome.features): 'watch', 'images'
   feature: (name) => !!(cfg.enabled && client && client.hasFeature(name)),

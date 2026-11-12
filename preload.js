@@ -24,4 +24,11 @@ contextBridge.exposeInMainWorld('pet', {
   voiceStop: () => ipcRenderer.send('voice:stop'),
   pointJump: (ref) => ipcRenderer.send('watch:point-jump', String(ref || '')),
   openScreenSettings: () => ipcRenderer.send('ui:open-screen-settings'),
+  // phase ③ (spec 17): her mood and quiet time in, the pet's body stimuli and actions she asked for out
+  onMood: (fn) => ipcRenderer.on('pet:mood', (_e, m) => fn(m)),
+  onQuiet: (fn) => ipcRenderer.on('pet:quiet', (_e, until) => fn(until)),
+  onAct: (fn) => ipcRenderer.on('pet:act', (_e, a) => fn(a)),
+  actDone: (id, r) => ipcRenderer.send('pet:act-done', String(id || ''), r && typeof r === 'object' ? { ok: !!r.ok, code: String(r.code || '') } : { ok: false, code: 'busy' }),
+  emotion: (cause) => ipcRenderer.send('pet:emotion', String(cause || '')),
+  interacted: () => ipcRenderer.send('pet:interact'),
 });

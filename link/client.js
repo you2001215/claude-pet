@@ -17,7 +17,10 @@ const DAY = 86400000;
 const later = (fn, ms) => { const h = setTimeout(fn, ms); if (h.unref) h.unref(); return h; };
 const every = (fn, ms) => { const h = setInterval(fn, ms); if (h.unref) h.unref(); return h; };
 const OUTBOX_MAX = 500;
-const ID_PREFIX = { 'event.watch': 'w', 'event.mode': 'o', 'event.typing': 'y', 'event.point': 'q', 'event.screen': 'x' };
+const ID_PREFIX = { 'event.watch': 'w', 'event.mode': 'o', 'event.typing': 'y', 'event.point': 'q', 'event.screen': 'x',
+  'event.presence': 'p', 'event.emotion': 'f', 'event.say_seen': 'n' };
+// phase ③ commands and the welcome.features entry each one needs (spec 17.1)
+const NEEDS = { 'cmd.mood': 'mood', 'cmd.act': 'act', 'cmd.quiet': 'presence' };
 const SEEN_MAX = 2000;
 
 class LinkClient extends EventEmitter {
@@ -42,7 +45,10 @@ class LinkClient extends EventEmitter {
     this.onSnapshot = o.onSnapshot || (async () => {});
     this.onMode = o.onMode || (async () => ({ ok: true }));      // cmd.mode (watch-together mode said in chat)
     this.onPoint = o.onPoint || (async () => ({ ok: true }));    // cmd.point (「她指他点」)
-    this.features = [];           // what her side said it supports (welcome.features): 'watch', 'images'
+    this.onMood = o.onMood || (async () => ({ ok: true }));      // cmd.mood (her mood of the hour, phase ③)
+    this.onAct = o.onAct || (async () => ({ ok: false, code: 'unknown' }));   // cmd.act (she asks for an action)
+    this.onQuiet = o.onQuiet || (async () => ({ ok: true }));    // cmd.quiet (「别吵我」)
+    this.features = [];           // what her side said it supports (welcome.features): 'watch', 'images', 'presence', 'mood', 'act'
     this._status = 'off';
     this.detail = '';
     this.deviceId = '';
@@ -200,6 +206,12 @@ class LinkClient extends EventEmitter {
       case 'event.care': return this._incoming(f, async () => { this._careState(d, f.ts); return { ok: true }; });
       case 'cmd.mode': return this._incoming(f, () => this.onMode(d, f));
       case 'cmd.point': return this._incoming(f, () => this.onPoint(d, f));
+      // not switched on by her side (welcome.features): not ours to act on (17.8 case 9)
+      case 'cmd.mood': case 'cmd.act': case 'cmd.quiet': {
+        if (!this.features.includes(NEEDS[f.type])) return this._incoming(f, async () => ({ ok: false, code: 'not_allowed' }));
+        const run = { 'cmd.mood': this.onMood, 'cmd.act': this.onAct, 'cmd.quiet': this.onQuiet }[f.type];
+        return this._incoming(f, () => run(d, f));
+      }
       default: this.unknown++;
     }
   }
@@ -234,7 +246,8 @@ class LinkClient extends EventEmitter {
     try { r = (await run()) || { ok: true }; } catch (e) { this.log(`处理 ${f.type} 出错：${e.code || e.message}`); return; }   // no ack: it comes again
     this.state.seen[f.id] = Date.now();
     this._save();
-    this._send(P.frame('ack', { ref: f.id, ok: r.ok !== false, ...(r.code ? { code: r.code } : {}) }, P.newId('a')));
+    // held: a proactive line kept for when the owner is back (17.3)
+    this._send(P.frame('ack', { ref: f.id, ok: r.ok !== false, ...(r.code ? { code: r.code } : {}), ...(r.held ? { held: true } : {}) }, P.newId('a')));
   }
 
   _ack(d) {

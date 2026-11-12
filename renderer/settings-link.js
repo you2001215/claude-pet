@@ -25,6 +25,9 @@
     $('linkState').textContent = st;
     $('linkPairRow').style.display = c.paired ? 'none' : '';
     $('linkUnpair').style.display = c.paired ? '' : 'none';
+    $('linkShareApp').checked = c.shareApp !== false;
+    $('linkShareTitle').checked = c.shareTitle !== false;
+    $('linkShareTitle').disabled = c.shareApp === false;
     if (document.activeElement !== $('linkUrl')) $('linkUrl').value = c.url || c.defaultUrl;
     if (document.activeElement !== $('linkName')) { $('linkName').value = c.deviceName || ''; $('linkName').placeholder = c.defaultName || ''; }
   }
@@ -44,6 +47,13 @@
     } finally { $('linkPair').disabled = false; }
   });
   $('linkCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('linkPair').click(); });
+  // what she may know of the front window (spec 17.2): saved at once, no reconnect
+  for (const [id, key] of [['linkShareApp', 'shareApp'], ['linkShareTitle', 'shareTitle']]) {
+    $(id).addEventListener('change', async () => {
+      const r = await U.linkSet({ [key]: $(id).checked });
+      if (r.ok) { show(r.config); msg(''); } else msg(r.error);
+    });
+  }
   $('linkSave').addEventListener('click', async () => {
     const r = await U.linkSet({ url: $('linkUrl').value.trim(), deviceName: $('linkName').value.trim() });
     if (r.ok) { msg('保存好了', true); show(r.config); } else msg(r.error);

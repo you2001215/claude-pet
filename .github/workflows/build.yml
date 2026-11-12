@@ -53,6 +53,8 @@ jobs:
         run: npm run test:smoke:link
       - name: 一起看的启动测试（假阿鲸 + 假 B 站页面里跑真的油猴脚本）
         run: npm run test:smoke:watch
+      - name: 在不在电脑前、心情、动作的启动测试（阶段 ③，假阿鲸）
+        run: npm run test:smoke:presence
 
   windows:
     name: Windows 安装包
@@ -77,6 +79,8 @@ jobs:
         run: npm run test:smoke:link
       - name: 一起看的启动测试（假阿鲸 + 假 B 站页面里跑真的油猴脚本）
         run: npm run test:smoke:watch
+      - name: 在不在电脑前、心情、动作的启动测试（阶段 ③，假阿鲸）
+        run: npm run test:smoke:presence
       - name: 打包
         # bash, not PowerShell: PowerShell's npm.ps1 can swallow the "--" before the extra flag
         shell: bash
@@ -138,6 +142,8 @@ jobs:
         run: npm run test:smoke:link
       - name: 一起看的启动测试（假阿鲸 + 假 B 站页面里跑真的油猴脚本）
         run: npm run test:smoke:watch
+      - name: 在不在电脑前、心情、动作的启动测试（阶段 ③，假阿鲸）
+        run: npm run test:smoke:presence
       - name: 打包（electron-builder 做 ad-hoc 签名）
         # electron-builder skips signing in pull requests unless told otherwise; ad-hoc signing uses no secrets
         env:

@@ -20,6 +20,8 @@ const linkLines = require('./link/lines');
 const linkProto = require('./link/protocol');
 // watching videos together (phase 2): the browser script's local endpoint and what goes to her side
 const watch = require('./watch');
+// phase 3: at the computer or not, the pet's body stimuli, her mood (docs/桌面连接接口说明.md section 17)
+const { Presence, Feelings, Held, readMood, moodNow, quietUntil, ACTS, AWAY_IDLE_S } = require('./link/presence');
 
 // serve the UI from app://pet/... so canvas pixels stay same-origin (needed for click-through hit tests)
 protocol.registerSchemesAsPrivileged([
@@ -412,6 +414,7 @@ const STAND_IN = '（阿鲸刚才没接上，这句是我自己说的）';
 
 handle('ai:send', async (_e, text, withScreen, input) => {
   pro.lastUserChat = Date.now();
+  feelings.interacted();
   careHeard(String(text || ''));
   input = input === 'voice' ? 'voice' : 'text';
   let standInFor = '';
@@ -597,10 +600,11 @@ async function captureScreen(display) {
   }
 }
 
-// the app in front (so she only glances while you are in a browser): { name, rect }, rect = the front window in
-// physical pixels on Windows (to capture the screen the browser is on), null elsewhere
+// the app in front (so she only glances while you are in a browser): { name, rect, title }, rect = the front window in
+// physical pixels on Windows (to capture the screen the browser is on), null elsewhere; title = the front window's
+// title (Windows always; Mac only when asked, and only with the screen recording permission), '' when unknown
 // Windows PowerShell 5.1 writes in the console code page (CP936 on Chinese Windows) and wraps errors in CLIXML, so
-// the script catches its own errors and prints everything as ASCII (\uXXXX escapes): 'name|l|t|r|b' or 'ERR|reason'
+// the script catches its own errors and prints everything as ASCII (\uXXXX escapes): 'name|l|t|r|b|title' or 'ERR|reason'
 const FRONT_PS = [
   "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop';",
   "function A([string]$s) { -join ($s.ToCharArray() | % { if ([int]$_ -lt 128) { [string]$_ } else { '\\u{0:x4}' -f [int]$_ } }) };",
@@ -610,12 +614,14 @@ const FRONT_PS = [
   '[DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(System.IntPtr h, out int p);',
   '[DllImport("user32.dll")] public static extern System.IntPtr SetThreadDpiAwarenessContext(System.IntPtr c);',
   '[DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr h, out RECT r);',
+  '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int n);',
   'public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }\';',
   // per-monitor aware v2, so the rectangle is in real pixels on scaled displays (missing before Windows 10 1607)
   'try { [void][W.U]::SetThreadDpiAwarenessContext([System.IntPtr](-4)) } catch {};',
   '$h=[W.U]::GetForegroundWindow(); $p=0; [void][W.U]::GetWindowThreadProcessId($h, [ref]$p);',
   '$r=New-Object "W.U+RECT"; [void][W.U]::GetWindowRect($h, [ref]$r);',
-  'A ((Get-Process -Id $p).ProcessName + "|" + $r.Left + "|" + $r.Top + "|" + $r.Right + "|" + $r.Bottom)',
+  '$sb=New-Object System.Text.StringBuilder 512; [void][W.U]::GetWindowText($h, $sb, 512);',
+  'A ((Get-Process -Id $p).ProcessName + "|" + $r.Left + "|" + $r.Top + "|" + $r.Right + "|" + $r.Bottom + "|" + $sb.ToString())',
   "} catch { 'ERR|' + (A $_.Exception.Message) }",
 ].join(' ');
 // each different PowerShell problem goes to error.log once (a few at most), so a real-machine check can read it
@@ -629,29 +635,46 @@ const unescPs = (s) => String(s).replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.
 // stderr of a failed run: CLIXML records and XML escapes are noise
 const psStderr = (s) => String(s || '').replace(/#< CLIXML/g, ' ').replace(/_x000[DA]_/g, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
 function parseFront(out) {
-  const [name = '', ...nums] = String(out || '').trim().split('|');
+  const [name = '', ...rest] = String(out || '').trim().split('|');
+  const nums = rest.slice(0, 4), title = rest.slice(4).join('|').trim();   // a title may contain |
   const [l, t, r, b] = nums.map(Number);
   const rect = nums.length === 4 && [l, t, r, b].every(Number.isFinite) && r > l && b > t ? { x: l, y: t, width: r - l, height: b - t } : null;
-  return { name: name.trim(), rect };
+  return { name: name.trim(), rect, title };
 }
-function frontApp() {
+// Mac: the front app and its front window's title, through CoreGraphics (no Accessibility permission needed;
+// window titles are only there with the screen recording permission, otherwise the title is '')
+const MAC_FRONT_JXA = [
+  "ObjC.import('AppKit'); ObjC.import('CoreGraphics');",
+  'var a = $.NSWorkspace.sharedWorkspace.frontmostApplication; var pid = a.processIdentifier; var name = ObjC.unwrap(a.localizedName) || ""; var title = "";',
+  'try { var ws = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0))) || [];',
+  '  for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.kCGWindowOwnerPID === pid && w.kCGWindowLayer === 0) { title = w.kCGWindowName || ""; break; } } } catch (e) {}',
+  'JSON.stringify({ name: name, title: title })',
+].join('\n');
+
+function frontApp({ title = false } = {}) {
   return new Promise((resolve) => {
     if (isWin) {
       // -EncodedCommand avoids Windows command-line quoting problems with the C# snippet
       const enc = Buffer.from(FRONT_PS, 'utf16le').toString('base64');
       execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', enc], { windowsHide: true, timeout: 10000 }, (err, out, errOut) => {
         // not err.message: it starts with the whole command line, i.e. the long base64 blob
-        if (err) { warnPs(`PowerShell 没跑成：code=${err.code} killed=${err.killed} signal=${err.signal} ${psStderr(errOut)}`); return resolve({ name: '', rect: null }); }
+        if (err) { warnPs(`PowerShell 没跑成：code=${err.code} killed=${err.killed} signal=${err.signal} ${psStderr(errOut)}`); return resolve({ name: '', rect: null, title: '' }); }
         const line = String(out || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean).pop() || '';
-        if (line.startsWith('ERR|')) { warnPs('PowerShell 报错：' + unescPs(line.slice(4)).replace(/\s+/g, ' ').slice(0, 300)); return resolve({ name: '', rect: null }); }
+        if (line.startsWith('ERR|')) { warnPs('PowerShell 报错：' + unescPs(line.slice(4)).replace(/\s+/g, ' ').slice(0, 300)); return resolve({ name: '', rect: null, title: '' }); }
         resolve(parseFront(unescPs(line)));
+      });
+    } else if (isMac && title) {
+      execFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e', MAC_FRONT_JXA], { timeout: 5000 }, (err, out) => {
+        let r = {};
+        try { r = err ? {} : JSON.parse(String(out || '').trim()); } catch (_) {}
+        resolve({ name: String(r.name || ''), rect: null, title: String(r.title || '') });
       });
     } else if (isMac) {
       execFile('/bin/sh', ['-c', 'lsappinfo info -only name "$(lsappinfo front)"'], { timeout: 5000 }, (err, out) => {
         const m = String(out || '').match(/=\s*"([^"]+)"/);
-        resolve({ name: err ? '' : (m ? m[1] : String(out || '').trim()), rect: null });
+        resolve({ name: err ? '' : (m ? m[1] : String(out || '').trim()), rect: null, title: '' });
       });
-    } else resolve({ name: '', rect: null });
+    } else resolve({ name: '', rect: null, title: '' });
   });
 }
 // matched at the start of a word, so "SearchApp" is not Arc and "citizen" is not Zen
@@ -743,11 +766,16 @@ async function lookTick() {
 }
 
 // ---------- what 阿鲸 sends on her own (cmd.say) and replies that came after the pet gave up waiting ----------
-async function linkSay(d) {
+async function linkSay(d, f) {
   if (d.expires_at && Date.now() > Number(d.expires_at)) return { ok: false, code: 'expired' };
   const source = String(d.source || '');
   // watching together: a line about a moment you have already left behind is dropped (section 16.7)
   if (source === 'watch' && !watch.fresh(d.watch)) return { ok: false, code: 'stale' };
+  // she came to talk just as you walked away: kept for when you're back, not sent to QQ instead (section 17.3)
+  if (source === 'proactive' && link.feature('presence') && !presence.here) { held.hold(f ? f.id : linkProto.newId('s'), d); return { ok: true, held: true }; }
+  return showSay(d, source);
+}
+async function showSay(d, source) {
   const { text, stickers: st } = link.toReply(d.parts);
   if (!text && !st.length) return { ok: true };
   if (source === 'watch') {
@@ -812,6 +840,136 @@ on('chat:typing', (_e, active) => {
   link.send('event.typing', { active });
 });
 
+// ---------- phase 3 (section 17): at the computer or not, the pet's body stimuli, her mood, 「别吵我」, her actions ----------
+const sys = { locked: false, asleep: false, idle: null };   // idle: only the automated checks set it (no real mouse there)
+const presence = new Presence({ send: (d) => link.send('event.presence', d) });
+// what the pet felt goes to her only when her side takes it; offline ones are dropped (17.4)
+const feelings = new Feelings({ send: (d) => { if (link.feature('mood')) link.send('event.emotion', d); } });
+const held = new Held();
+let mood = null, moodShown = '-';
+// is a video playing? the watch-together script first; the system only when it matters (no input for a while)
+const videoCheck = { at: 0, on: false };
+function systemVideo() {
+  return new Promise((resolve) => {
+    if (isMac) {
+      // browsers and players hold "don't dim the display" while a video plays
+      execFile('/usr/bin/pmset', ['-g', 'assertions'], { timeout: 5000 }, (err, out) => {
+        if (err) return resolve(false);
+        resolve(String(out || '').split('\n').some((l) => /pid \d+\((?!ClaudePet|Electron)[^)]*\):.*PreventUserIdleDisplaySleep/.test(l)));
+      });
+    } else if (isWin) {
+      // a full-screen window in front (not the desktop, not us)
+      frontApp().then((f) => {
+        if (!f.rect || /^(explorer|ClaudePet|electron)$/i.test(f.name)) return resolve(false);
+        resolve(screen.getAllDisplays().some((dsp) => {
+          const b = screen.dipToScreenRect ? screen.dipToScreenRect(null, dsp.bounds) : dsp.bounds;
+          return f.rect.x <= b.x + 2 && f.rect.y <= b.y + 2 && f.rect.x + f.rect.width >= b.x + b.width - 2 && f.rect.y + f.rect.height >= b.y + b.height - 2;
+        }));
+      }, () => resolve(false));
+    } else resolve(false);
+  });
+}
+async function videoPlaying(idle) {
+  const p = watch.position();
+  if (p && !p.paused) return true;
+  if (idle < AWAY_IDLE_S - 60) return false;
+  if (Date.now() - videoCheck.at < 30000) return videoCheck.on;
+  videoCheck.at = Date.now();
+  videoCheck.on = await systemVideo();
+  return videoCheck.on;
+}
+// the front app and window title, as far as the owner lets her know (17.2); checked every 15 s (30 s on Windows)
+const frontCheck = { at: 0, v: null };
+async function frontForHer() {
+  const c = link.getConfig();
+  if (!c.shareApp) return null;
+  if (Date.now() - frontCheck.at >= (isWin ? 30000 : 15000)) {
+    frontCheck.at = Date.now();
+    const f = await frontApp({ title: c.shareTitle });
+    frontCheck.v = f && f.name ? { app: f.name, title: f.title || '' } : null;
+  }
+  const v = frontCheck.v;
+  return v && !c.shareTitle ? { app: v.app } : v;
+}
+let presenceLast = Date.now(), presenceBusy = false;
+async function presenceTick() {
+  if (presenceBusy) return;
+  presenceBusy = true;
+  try {
+    const t = Date.now(), dt = Math.min(t - presenceLast, 60000);
+    presenceLast = t;
+    if (!link.linked()) { pushMood(); return; }
+    const idle = sys.idle != null ? sys.idle : powerMonitor.getSystemIdleTime();
+    const watching = await videoPlaying(idle);
+    const front = link.feature('presence') && idle < AWAY_IDLE_S ? await frontForHer() : null;
+    presence.sample({ idle_s: idle, locked: sys.locked, asleep: sys.asleep, watching, front });
+    if (presence.here && held.size) releaseHeld();
+    for (const id of held.expire()) link.send('event.say_seen', { id, shown: false, at: Date.now() });
+    feelings.tick(dt, { here: presence.here, watching, quiet: !!link.quietUntil() });
+    pushMood();
+  } catch (e) { logError('presence', e); } finally { presenceBusy = false; }
+}
+// connected (again): tell her where the owner is, if her side wants to know
+function presenceOnline() {
+  presence.stop();
+  if (!link.feature('presence')) return;
+  presenceTick().finally(() => { if (link.feature('presence')) presence.start(); });
+}
+// back at the computer: what she said meanwhile, one after another; she is told what was seen and what wasn't
+function releaseHeld() {
+  const { show, missed } = held.release();
+  for (const id of missed) link.send('event.say_seen', { id, shown: false, at: Date.now() });
+  show.forEach((it, i) => setTimeout(() => {
+    showSay(it.d, 'proactive')
+      .then(() => link.send('event.say_seen', { id: it.id, shown: true, at: Date.now() }))
+      .catch((e) => logError('link:held', e));
+  }, 1500 + i * 9000));
+}
+// her mood of the hour -> how the pet looks and acts when nothing is going on (17.5); calm again after `until`
+function pushMood(force) {
+  const m = link.linked() ? moodNow(mood) : null;
+  const key = m ? `${m.name}${m.level}` : '';
+  if (!force && key === moodShown) return;
+  moodShown = key;
+  send('pet:mood', m ? { name: m.name, level: m.level } : null);
+}
+function linkMood(d, f) {
+  const m = readMood(d, f && f.ts);
+  if (!m) return { ok: false, code: 'invalid' };
+  if (!mood || m.ts >= mood.ts) { mood = m; pushMood(); }
+  return { ok: true };
+}
+// 「别吵我」: until when (capped at 12 hours, kept on disk); 0 = over (17.3)
+function linkQuiet(d) {
+  const until = quietUntil(d && d.until);
+  link.setQuiet(until);
+  send('pet:quiet', until);
+  return { ok: true };
+}
+// an action she asks for (17.6): main checks away / too often / expired, the pet window whether it can do it
+let actLastAt = 0;
+const actWait = new Map();
+async function linkAct(d) {
+  if (d.expires_at && Date.now() > Number(d.expires_at)) return { ok: false, code: 'expired' };
+  const name = String(d.name || '');
+  if (!ACTS.includes(name)) return { ok: false, code: 'unknown' };
+  if (!presence.here) return { ok: false, code: 'away' };
+  if (Date.now() - actLastAt < 60000) return { ok: false, code: 'rate' };
+  if (!win || win.isDestroyed()) return { ok: false, code: 'busy' };
+  const id = linkProto.newId('a');
+  const r = await new Promise((resolve) => {
+    const timer = setTimeout(() => { actWait.delete(id); resolve({ ok: false, code: 'busy' }); }, 3000);
+    actWait.set(id, (res) => { clearTimeout(timer); actWait.delete(id); resolve(res || {}); });
+    send('pet:act', { id, name });
+  });
+  if (r.ok) { actLastAt = Date.now(); return { ok: true }; }
+  return { ok: false, code: r.code === 'unknown' ? 'unknown' : 'busy' };
+}
+on('pet:act-done', (_e, id, r) => { const fn = actWait.get(String(id)); if (fn) fn(r); });
+// the pet's body (renderer/pet.js): thrown down hard, poked into a sulk, patted out of it; and any touch at all
+on('pet:emotion', (_e, cause) => { if (['drop', 'poke', 'calm'].includes(cause)) feelings.stimulus(cause); });
+on('pet:interact', () => feelings.interacted());
+
 // ---------- screen capture problems ----------
 const SCREEN_PANE = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
 function captureError(e) {
@@ -853,7 +1011,12 @@ handle('watch:new-key', () => watch.newKey());
 const linkLog = [];
 const linkNote = (m) => { linkLog.push(`${new Date().toISOString().slice(11, 19)} ${m}`); if (linkLog.length > 40) linkLog.shift(); };
 handle('link:get', () => link.getConfig());
-handle('link:set', (_e, s) => link.setConfig(s || {}));
+handle('link:set', (_e, s) => {
+  const r = link.setConfig(s || {});
+  // she may now know more or less about the front window: look again at the next check
+  if (s && (s.shareApp !== undefined || s.shareTitle !== undefined)) { frontCheck.at = 0; frontCheck.v = null; }
+  return r;
+});
 handle('link:pair', (_e, code) => link.pair(code));
 handle('link:unpair', () => link.unpair());
 
@@ -896,9 +1059,11 @@ function proactiveTick() {
     if (idle > 30) return;
     pro.away = false; pro.restAnchor = now;
     const awayMin = Math.round((now - pro.awayStart) / 60000);
-    if (now - pro.lastSaid > 5 * 60000) ai.seen().then((meet) => speakUp('return', { awayMin, meet }), () => speakUp('return', { awayMin }));
+    if (now - pro.lastSaid > 5 * 60000 && !link.quietUntil()) ai.seen().then((meet) => speakUp('return', { awayMin, meet }), () => speakUp('return', { awayMin }));
     return;
   }
+  // 「别吵我」 (17.3): no nudges of her own; reminders still come (they were asked for)
+  if (link.quietUntil()) return;
   const chatting = now - pro.lastUserChat < 5 * 60000 || ai.busy() || (chatWin && !chatWin.isDestroyed() && chatWin.isFocused());
   if (chatting) { pro.restAnchor = Math.max(pro.restAnchor, now - 45 * 60000); return; }
   const d = new Date();
@@ -940,11 +1105,13 @@ handle('get-bounds', () => {
   return { bounds: b, workArea: workAreaAt(b.x + b.width / 2, b.y + b.height - 10) };
 });
 handle('get-cursor', () => screen.getCursorScreenPoint());
-handle('get-settings', () => ({ size: settings.size, height: SIZES[settings.size], walk: settings.walk, outfit: settings.outfit, whisper: ai.whisperMode() }));
+handle('get-settings', () => ({ size: settings.size, height: SIZES[settings.size], walk: settings.walk, outfit: settings.outfit, whisper: ai.whisperMode(),
+  quietUntil: link.quietUntil(), mood: (() => { const m = link.linked() ? moodNow(mood) : null; return m ? { name: m.name, level: m.level } : null; })() }));
 // a line made up by the model for her muttering; skipped while you are away so it costs nothing
 handle('ai:whisper', async (_e, ctx) => {
   if (powerMonitor.getSystemIdleTime() > 600) return { ok: false, reason: 'away' };
   if (link.online()) return { ok: false, reason: 'linked' };
+  if (link.quietUntil()) return { ok: false, reason: 'quiet' };
   return ai.whisper({ action: String((ctx && ctx.action) || '').slice(0, 40) });
 });
 handle('ui:outfit', () => settings.outfit);
@@ -1036,6 +1203,8 @@ async function diagnosticsText() {
 
   sec('连接阿鲸（AstrBot）');
   block(safe(() => link.diagnostics()));
+  // where the owner is and her mood: states only, never the app name or window title
+  block(safe(() => { const p = presence.info(), m = moodNow(mood); return { 在不在电脑前: `${p.state}（${p.why}）`, 在放视频: p.watching, 报给阿鲸: p.started, 她的心情: m ? `${m.name} ${m.level}` : '（没有）', 等主人回来再说的: held.size, 情绪事件发过: feelings.sent }; }));
   sec('一起看');
   block(safe(() => { const w = watch.status(); return { 开着: w.enabled, 接口开着: w.listening, 端口: w.port, 档位: w.mode, 话多每小时: w.hourly_max, 念出来: w.speak, 脚本上次来: w.scriptSeenAt ? when(w.scriptSeenAt) : '没来过', 正在看: !!w.watching, 阿鲸那边支持: w.herSide, 出错: w.error || '' }; }));
   if (linkLog.length) kv('最近的连接记录', '\n' + linkLog.slice(-15).join('\n'));
@@ -1142,9 +1311,10 @@ app.whenReady().then(() => {
   ai.init();
   link.init({
     userData: app.getPath('userData'), safeStorage, appVersion: app.getVersion(), log: linkNote,
-    onSay: (d) => linkSay(d), onLate: (d) => linkLate(d).catch((e) => logError('link:late', e)),
-    onStatus: () => { broadcast('link:status', link.getConfig()); broadcast('watch:status', watch.status()); },
-    onMode: (d) => watch.applyMode(d), onPoint: (d, f) => linkPoint(d, f), onOnline: () => watch.tellMode('connect'),
+    onSay: (d, f) => linkSay(d, f), onLate: (d) => linkLate(d).catch((e) => logError('link:late', e)),
+    onStatus: () => { if (!link.online()) presence.stop(); broadcast('link:status', link.getConfig()); broadcast('watch:status', watch.status()); },
+    onMode: (d) => watch.applyMode(d), onPoint: (d, f) => linkPoint(d, f), onOnline: () => { watch.tellMode('connect'); presenceOnline(); },
+    onMood: (d, f) => linkMood(d, f), onAct: (d) => linkAct(d), onQuiet: (d) => linkQuiet(d),
   });
   watch.init({ userData: app.getPath('userData'), link, log: linkNote, onChange: (st) => broadcast('watch:status', st) }).catch((e) => logError('watch', e));
   ai.setLinkMemory(() => link.offlinePrompt());
@@ -1162,6 +1332,12 @@ app.whenReady().then(() => {
   setTimeout(checkReminders, 5000);
   powerMonitor.on('resume', () => setTimeout(checkReminders, 3000));
   powerMonitor.on('unlock-screen', () => setTimeout(checkReminders, 1500));
+  // at the computer or not (section 17.2): locking and sleeping count at once
+  powerMonitor.on('lock-screen', () => { sys.locked = true; presenceTick(); });
+  powerMonitor.on('unlock-screen', () => { sys.locked = false; presenceTick(); });
+  powerMonitor.on('suspend', () => { sys.asleep = true; presenceTick(); });
+  powerMonitor.on('resume', () => { sys.asleep = false; presenceTick(); });
+  setInterval(presenceTick, 5000);
   if (isWin) app.setAppUserModelId('com.fanmade.claudepet');
   if (isMac && app.dock) app.dock.hide();
   createWindow();
@@ -1169,7 +1345,8 @@ app.whenReady().then(() => {
   screen.on('display-metrics-changed', () => send('cmd', 'display-changed'));
   if (process.env.PET_TEST) {
     global.__pet = { speakUp, pro, checkReminders, reminders, lookAndComment, frontApp, captureScreen, voice, openChat, chatWin: () => chatWin, settingsWin: () => settingsWin, openSettings, setOutfit, send, settings: () => settings, stickers, pushSettings, ai,
-      lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu, link, careHeard, watch, linkPoint, imagePart };
+      lookTick, planNextLook, parseFront, isBrowser, displayFor, diagnosticsText, exportDiagnostics, scrub, buildMenu, link, careHeard, watch, linkPoint, imagePart,
+      presence, feelings, held, presenceTick, sys, mood: () => mood, frontCheck, videoCheck };
     require(process.env.PET_TEST)(() => win);
   }
   screen.on('display-removed', () => send('cmd', 'display-changed'));

@@ -291,7 +291,7 @@ test('sleep questions are counted together with QQ', async () => {
   const fake = await new FakeAdapter().start();
   try {
     const c = await paired(fake);
-    const slot = '2026-11-06/night';
+    const slot = `${P.careDay()}/night`;   // today: counts older than 3 days are forgotten
     assert.ok(c.careAllowed('sleep', slot), 'nothing asked yet');
     fake.push('event.care', { kind: 'sleep', slot, action: 'state', asked_qq: 1, asked_desktop: 0, answered: false, stopped: false, limit: 2 });
     await until(() => fake.acks.length === 1, 2000, 'state acked');
@@ -300,9 +300,9 @@ test('sleep questions are counted together with QQ', async () => {
     assert.ok(!c.careAllowed('sleep', slot), 'QQ once + desktop once = 2, no third');
     await until(() => fake.received('event.care').length === 1, 2000, 'care sent');
     assert.strictEqual(fake.received('event.care')[0].data.side, 'desktop');
-    fake.push('event.care', { kind: 'meal', slot: '2026-11-06/lunch', action: 'state', asked_qq: 0, asked_desktop: 0, answered: true, stopped: false, limit: 1 });
+    fake.push('event.care', { kind: 'meal', slot: `${P.careDay()}/lunch`, action: 'state', asked_qq: 0, asked_desktop: 0, answered: true, stopped: false, limit: 1 });
     await until(() => fake.acks.length === 2, 2000, 'meal state');
-    assert.ok(!c.careAllowed('meal', '2026-11-06/lunch'), 'answered: no more');
+    assert.ok(!c.careAllowed('meal', `${P.careDay()}/lunch`), 'answered: no more');
     c.stop();
   } finally { await fake.close(); }
 });
@@ -366,7 +366,7 @@ test('a care state already counting a desktop question: one more from here makes
   const fake = await new FakeAdapter().start();
   try {
     const c = await paired(fake);
-    const slot = '2026-11-06/night';
+    const slot = `${P.careDay()}/night`;   // today: counts older than 3 days are forgotten
     // asked on another computer (or before a restart): her side says desktop 1
     fake.push('event.care', { kind: 'sleep', slot, action: 'state', asked_qq: 0, asked_desktop: 1, answered: false, stopped: false, limit: 2 });
     await until(() => fake.acks.length === 1, 2000, 'state');
@@ -387,7 +387,7 @@ test('a question asked while she was away still counts after reconnecting, befor
   const fake = await new FakeAdapter().start();
   try {
     const c = await paired(fake);
-    const slot = '2026-11-06/night';
+    const slot = `${P.careDay()}/night`;   // today: counts older than 3 days are forgotten
     c.stop();
     fake.ackOn = false;                       // her side hasn't taken the offline question in yet
     c.care('sleep', slot, 'asked');           // asked while away
